@@ -1,88 +1,73 @@
 package vn.tutu.muser1
 
-import android.content.Context
-import android.content.Intent
 import android.net.wifi.WifiConfiguration
 import android.net.wifi.WifiManager
-import android.net.wifi.WifiNetworkSuggestion
-import android.os.Build
-import android.provider.Settings
+import android.util.Log
 
+/**
+ * Wi‑Fi provisioning cho Phicomm R1 chạy Android 5.1.1 (API 22).
+ *
+ * Không dùng WifiNetworkSuggestion vì API này chỉ có từ Android 10.
+ */
 object WifiProvisioner {
 
-    fun provision(
-        context: Context,
-        wifiManager: WifiManager,
-        ssid: String,
-        password: String
-    ): String {
+    private const val TAG = "MuseR1"
+
+    fun connect(wifiManager: WifiManager, ssid: String, password: String): String {
         val cleanSsid = ssid.trim()
 
         if (cleanSsid.isEmpty()) {
-            return "SSID không được để trống."
+            return "SSID is empty"
         }
 
         if (password.length < 8) {
-            return "Mật khẩu WPA2 phải có ít nhất 8 ký tự."
+            return "WPA2 password must contain at least 8 characters"
         }
 
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            suggestNetwork(wifiManager, cleanSsid, password)
-        } else {
-            addLegacyNetwork(wifiManager, cleanSsid, password)
-        }
-    }
-
-    private fun suggestNetwork(
-        wifiManager: WifiManager,
-        ssid: String,
-        password: String
-    ): String {
-        val suggestion = WifiNetworkSuggestion.Builder()
-            .setSsid(ssid)
-            .setWpa2Passphrase(password)
-            .setIsAppInteractionRequired(true)
-            .build()
-
-        wifiManager.removeNetworkSuggestions(emptyList())
-        val result = wifiManager.addNetworkSuggestions(listOf(suggestion))
-
-        return when (result) {
-            WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS ->
-                "Đã gửi cấu hình Wi‑Fi. Hãy chờ R1 kết nối hoặc mở Cài đặt Wi‑Fi nếu cần xác nhận."
-            WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_APP_DISALLOWED ->
-                "Hệ thống không cho phép ứng dụng đề xuất Wi‑Fi. Hãy mở Cài đặt Wi‑Fi."
-            else -> "Không gửi được cấu hình Wi‑Fi (code: $result). Hãy mở Cài đặt Wi‑Fi."
-        }
-    }
-
-    @Suppress("DEPRECATION")
-    private fun addLegacyNetwork(
-        wifiManager: WifiManager,
-        ssid: String,
-        password: String
-    ): String {
         return try {
             val configuration = WifiConfiguration().apply {
-                SSID = "\"$ssid\""
+                SSID = "\"$cleanSsid\""
                 preSharedKey = "\"$password\""
             }
 
             val networkId = wifiManager.addNetwork(configuration)
+
             if (networkId == -1) {
-                "Không thêm được mạng Wi‑Fi. Hãy mở Cài đặt Wi‑Fi."
-            } else {
-                wifiManager.disconnect()
-                wifiManager.enableNetwork(networkId, true)
-                wifiManager.reconnect()
-                "Đã gửi lệnh kết nối Wi‑Fi $ssid."
+                val existingId = findExistingNetworkId(wifiManager, cleanSsid)
+
+                if (existingId == -1) {
+                    return "Unable to add Wi‑Fi network"
+                }
+
+                enableAndReconnect(wifiManager, existingId)
+                return "Updated existing Wi‑Fi network: $cleanSsid"
             }
+
+            enableAndReconnect(wifiManager, networkId)
+            "Connected command sent for $cleanSsid"
         } catch (error: Exception) {
-            "Lỗi kết nối Wi‑Fi: ${error.message}. Hãy mở Cài đặt Wi‑Fi."
+            Log.e(TAG, "Wi‑Fi provisioning failed", error)
+            "Wi‑Fi provisioning failed: ${error.message}"
         }
     }
 
-    fun openWifiSettings(context: Context) {
-        context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+    @Suppress("DEPRECATION")
+    private fun findExistingNetworkId(
+        wifiManager: WifiManager,
+        ssid: String
+    ): Int {
+        val configuredNetworks = wifiManager.configuredNetworks ?: return -1
+
+        return configuredNetworks
+            .firstOrNull { it.SSID == "\"$ssid\"" }
+            ?.networkId
+            ?: -1
+    }
+
+    @Suppress("DEPRECATION")
+    private fun enableAndReconnect(wifiManager: WifiManager, networkId: Int) {
+        wifiManager.disconnect()
+        wifiManager.enableNetwork(networkId, true)
+        wifiManager.reconnect()
     }
 }

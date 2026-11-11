@@ -1,8 +1,6 @@
 package vn.tutu.muser1
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import java.net.InetAddress
 import java.net.NetworkInterface
@@ -11,22 +9,14 @@ object NetworkStateObserver {
 
     fun currentSummary(context: Context): String {
         val wifiManager = context.getSystemService(WifiManager::class.java)
-        val connectivityManager =
-            context.getSystemService(ConnectivityManager::class.java)
-
         val ssid = wifiManager.connectionInfo?.ssid?.removeSurrounding("\"")
         val ip = currentIpv4()
-        val online = connectivityManager
-            ?.getNetworkCapabilities(connectivityManager.activeNetwork)
-            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
 
         return buildString {
             append("SSID: ")
-            appendLine(ssid ?: "Không rõ")
+            appendLine(ssid ?: "unknown")
             append("IP: ")
-            appendLine(ip ?: "Chưa có")
-            append("Internet: ")
-            append(if (online) "Đã kết nối" else "Chưa xác nhận")
+            append(ip ?: "not available")
         }
     }
 
