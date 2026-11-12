@@ -86,7 +86,7 @@ class BluetoothProvisionServer(
                 val password = request["password"]
                     ?: throw IOException("Thiếu mật khẩu")
 
-                Log.d(TAG, "Nhận yêu cầu cấu hình Wi‑Fi: $ssid")
+                Log.d(TAG, "Nhận yêu cầu cấu hình Wi‑Fi")
 
                 val success = wifiProvisioner.connect(
                     context = context,
@@ -125,7 +125,7 @@ class BluetoothProvisionServer(
             if (read == -1) break
 
             builder.append(String(buffer, 0, read, Charsets.UTF_8))
-            if (builder.contains("END\n") || builder.contains("END")) break
+            if (builder.endsWith("END\n") || builder.endsWith("END")) break
         }
 
         return builder.toString()

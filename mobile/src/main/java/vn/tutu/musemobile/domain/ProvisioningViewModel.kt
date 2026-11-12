@@ -2,6 +2,7 @@ package vn.tutu.musemobile.domain
 
 import android.annotation.SuppressLint
 import android.app.Application
+import android.bluetooth.BluetoothDevice
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -35,6 +36,13 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     private var selectedNetwork: WifiNetwork? = null
     private var speakerIp = "192.168.43.1"
     private var password = ""
+    private var bluetoothDevice: BluetoothDevice? = null
+
+    @SuppressLint("MissingPermission")
+    fun selectBluetoothDevice(device: BluetoothDevice) {
+        bluetoothDevice = device
+        status = "Đã chọn ${device.name ?: "Muse R1"}."
+    }
 
     fun setSpeakerIp(value: String) {
         speakerIp = value
@@ -98,31 +106,29 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
 
         viewModelScope.launch {
             state = ProvisioningState.Provisioning
-            status = "Đang tìm Muse R1 qua Bluetooth..."
 
-            bluetoothProvisioner.findR1Device().fold(
-                onSuccess = { device ->
-                    val deviceName = device.name ?: "Muse R1"
-                    status = "Đã tìm thấy $deviceName. Đang gửi Wi‑Fi..."
-                    bluetoothProvisioner.provisionWifi(
-                        device = device,
-                        ssid = network.ssid,
-                        password = password
-                    ).fold(
-                        onSuccess = {
-                            status = "Đã gửi Wi‑Fi tới R1. Đang chờ R1 kết nối..."
-                            waitForR1OnHomeNetwork()
-                        },
-                        onFailure = { error ->
-                            state = ProvisioningState.Failure(
-                                error.message ?: "Không gửi được Wi‑Fi qua Bluetooth"
-                            )
-                        }
-                    )
+            val device = bluetoothDevice ?: bluetoothProvisioner.findR1Device().getOrElse {
+                state = ProvisioningState.Failure(
+                    it.message ?: "Chưa chọn Muse R1 qua Bluetooth"
+                )
+                return@launch
+            }
+
+            val deviceName = device.name ?: "Muse R1"
+            status = "Đang gửi Wi‑Fi tới $deviceName qua Bluetooth..."
+
+            bluetoothProvisioner.provisionWifi(
+                device = device,
+                ssid = network.ssid,
+                password = password
+            ).fold(
+                onSuccess = {
+                    status = "Đã gửi Wi‑Fi tới R1. Đang chờ R1 kết nối..."
+                    waitForR1OnHomeNetwork()
                 },
                 onFailure = { error ->
                     state = ProvisioningState.Failure(
-                        error.message ?: "Không tìm thấy Muse R1 qua Bluetooth"
+                        error.message ?: "Không gửi được Wi‑Fi qua Bluetooth"
                     )
                 }
             )

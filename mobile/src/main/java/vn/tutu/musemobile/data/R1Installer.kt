@@ -103,7 +103,7 @@ class R1Installer(
                 onProgress("Đang khởi động Muse R1 Agent...")
                 runShell(
                     connection = connection,
-                    command = "monkey -p vn.tutu.museagent -c android.intent.category.LAUNCHER 1; am startservice vn.tutu.muser1/.AgentService"
+                    command = "monkey -p vn.tutu.muser1 -c android.intent.category.LAUNCHER 1; am startservice vn.tutu.muser1/.AgentService"
                 )
                 onProgress("Đã cài và khởi động Muse R1 Agent")
             }
@@ -161,12 +161,20 @@ class R1Installer(
             writeString(done, 0, "DONE")
             writeInt(done, 4, (System.currentTimeMillis() / 1000).toInt())
             stream.write(done)
+            readSyncResponse(stream)
             stream.close()
         } finally {
             try {
                 stream.close()
             } catch (_: Exception) {
             }
+        }
+    }
+
+    private fun readSyncResponse(stream: AdbStream) {
+        val response = stream.read()
+        if (!String(response, Charsets.US_ASCII).contains("OKAY")) {
+            throw IOException("ADB từ chối push APK")
         }
     }
 

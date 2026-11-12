@@ -48,6 +48,21 @@ class BluetoothProvisioner(
     }
 
     @SuppressLint("MissingPermission")
+    fun getBondedR1Devices(): List<BluetoothDevice> {
+        val adapter = bluetoothAdapter ?: return emptyList()
+
+        if (!adapter.isEnabled) {
+            return emptyList()
+        }
+
+        return adapter.bondedDevices
+            ?.filter {
+                it.name?.startsWith(DEVICE_NAME_PREFIX) == true
+            }
+            ?: emptyList()
+    }
+
+    @SuppressLint("MissingPermission")
     suspend fun findR1Device(): Result<BluetoothDevice> = withContext(Dispatchers.IO) {
         runCatching {
             val adapter = bluetoothAdapter ?: throw IOException("Thiết bị không hỗ trợ Bluetooth")
