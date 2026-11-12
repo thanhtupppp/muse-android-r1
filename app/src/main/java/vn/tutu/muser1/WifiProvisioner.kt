@@ -9,6 +9,9 @@ object WifiProvisioner {
     private const val TAG = "MuseR1"
     private const val CONNECT_TIMEOUT_MS = 30_000L
     private const val CONNECT_POLL_INTERVAL_MS = 1_000L
+    private const val RADIO_SWITCH_TIMEOUT_MS = 20_000L
+    private const val WIFI_AP_STATE_ENABLED = 13
+    private const val WIFI_AP_STATE_ENABLING = 12
 
     @Volatile
     var lastFailureReason: String = "Chưa có thông tin lỗi"
@@ -43,10 +46,36 @@ object WifiProvisioner {
             return fail("Mật khẩu WPA2 phải có ít nhất 8 ký tự")
         }
         return try {
+            // On single-radio R1 hardware, SoftAP and STA cannot run together.
+            // Stop the hotspot first, then wait for the client Wi-Fi radio to become enabled.
             if (!wifiManager.isWifiEnabled) {
-                Log.i(TAG, "Wi-Fi is disabled; requesting enable")
-                if (!wifiManager.setWifiEnabled(true)) {
-                    return fail("Không bật được Wi-Fi trên loa (setWifiEnabled=false)")
+                val apState = getWifiApState(wifiManager)
+                Log.i(TAG, "Wi-Fi client disabled; current SoftAP state=$apState")
+                if (apState == WIFI_AP_STATE_ENABLED || apState == WIFI_AP_STATE_ENABLING) {
+                    if (!setWifiApEnabled(wifiManager, false)) {
+                        return fail("Wi-Fi client đang tắt và không thể tắt SoftAP qua WifiManager; firmware có thể yêu cầu quyền hệ thống")
+                    }
+                    Log.i(TAG, "Đã yêu cầu tắt SoftAP; chờ chuyển radio sang Wi-Fi client")
+                }
+
+                val radioDeadline = System.currentTimeMillis() + RADIO_SWITCH_TIMEOUT_MS
+                while (System.currentTimeMillis() < radioDeadline && !wifiManager.isWifiEnabled) {
+                    Thread.sleep(CONNECT_POLL_INTERVAL_MS)
+                }
+
+                if (!wifiManager.isWifiEnabled) {
+                    Log.i(TAG, "SoftAP state sau khi yêu cầu tắt=${getWifiApState(wifiManager)}; yêu cầu bật Wi-Fi client")
+                    if (!wifiManager.setWifiEnabled(true)) {
+                        return fail("Không bật được Wi-Fi client sau khi tắt SoftAP (setWifiEnabled=false); wifiState=${wifiManager.wifiState}")
+                    }
+                    val enableDeadline = System.currentTimeMillis() + RADIO_SWITCH_TIMEOUT_MS
+                    while (System.currentTimeMillis() < enableDeadline && !wifiManager.isWifiEnabled) {
+                        Thread.sleep(CONNECT_POLL_INTERVAL_MS)
+                    }
+                }
+
+                if (!wifiManager.isWifiEnabled) {
+                    return fail("Wi-Fi client vẫn tắt sau khi chuyển chế độ; wifiState=${wifiManager.wifiState}, SoftAP state=${getWifiApState(wifiManager)}")
                 }
             }
 
@@ -112,6 +141,32 @@ object WifiProvisioner {
         } catch (error: Exception) {
             Log.e(TAG, "Wi-Fi provisioning exception", error)
             fail("Ngoại lệ ${error.javaClass.simpleName}: ${error.message ?: "không có chi tiết"}")
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun getWifiApState(wifiManager: WifiManager): Int? {
+        return try {
+            val method = wifiManager.javaClass.getMethod("getWifiApState")
+            (method.invoke(wifiManager) as? Int)
+        } catch (error: Exception) {
+            Log.w(TAG, "Không đọc được SoftAP state qua API firmware: ${error.message}")
+            null
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun setWifiApEnabled(wifiManager: WifiManager, enabled: Boolean): Boolean {
+        return try {
+            val method = wifiManager.javaClass.getMethod(
+                "setWifiApEnabled",
+                WifiConfiguration::class.java,
+                java.lang.Boolean.TYPE
+            )
+            (method.invoke(wifiManager, null, enabled) as? Boolean) ?: false
+        } catch (error: Exception) {
+            Log.e(TAG, "Không thể gọi WifiManager.setWifiApEnabled($enabled)", error)
+            false
         }
     }
 
