@@ -30,6 +30,9 @@ fun AddR1Screen(
     onR1Found: () -> Unit
 ) {
     var speakerIp by remember { mutableStateOf("192.168.43.1") }
+    var apkUrl by remember {
+        mutableStateOf("https://your-server.com/muse_r1_agent.apk")
+    }
 
     Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
         Column(
@@ -46,9 +49,11 @@ fun AddR1Screen(
             )
 
             Spacer(modifier = Modifier.height(16.dp))
+
             Text("1. Giữ nút tròn trên loa khoảng 6 giây.")
             Text("2. Kết nối Wi‑Fi Phicomm_R1_xxx.")
-            Text("3. Quay lại ứng dụng và kiểm tra kết nối.")
+            Text("3. Cài Muse R1 Agent qua ADB.")
+            Text("4. Chọn Wi‑Fi nhà và gửi cấu hình qua Bluetooth.")
 
             Spacer(modifier = Modifier.height(24.dp))
 
@@ -60,7 +65,29 @@ fun AddR1Screen(
                 modifier = Modifier.fillMaxWidth()
             )
 
+            Spacer(modifier = Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = apkUrl,
+                onValueChange = { apkUrl = it },
+                label = { Text("URL APK Muse R1 Agent") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
             Spacer(modifier = Modifier.height(20.dp))
+
+            Button(
+                onClick = {
+                    viewModel.setSpeakerIp(speakerIp.trim())
+                    viewModel.installR1Agent(apkUrl.trim())
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Cài Muse R1 Agent qua ADB")
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
 
             Button(
                 onClick = {
@@ -72,6 +99,8 @@ fun AddR1Screen(
                 Text("Kiểm tra kết nối R1")
             }
 
+            Spacer(modifier = Modifier.height(12.dp))
+
             TextButton(onClick = onRequestWifiPermission) {
                 Text("Cấp quyền quét Wi‑Fi")
             }
@@ -81,6 +110,7 @@ fun AddR1Screen(
             }
 
             Spacer(modifier = Modifier.height(24.dp))
+
             Text(text = viewModel.status)
         }
     }

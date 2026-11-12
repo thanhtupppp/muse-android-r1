@@ -97,9 +97,18 @@ fun WifiPickerScreen(
                 Text("Kết nối loa với Wi‑Fi này")
             }
 
+            Spacer(modifier = Modifier.height(12.dp))
+
             TextButton(onClick = onBack) {
                 Text("Quay lại")
             }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = viewModel.status,
+                style = MaterialTheme.typography.bodyMedium
+            )
         }
     }
 }
