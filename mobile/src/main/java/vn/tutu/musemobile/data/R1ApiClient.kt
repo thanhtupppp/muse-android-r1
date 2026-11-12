@@ -9,9 +9,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
-/**
- * Client gọi Muse R1 Agent qua local HTTP khi điện thoại đang nối hotspot R1.
- */
 class R1ApiClient {
 
     private val httpClient = OkHttpClient.Builder()
@@ -27,6 +24,18 @@ class R1ApiClient {
 
             httpClient.newCall(request).execute().use { response ->
                 response.isSuccessful
+            }
+        }
+    }
+
+    suspend fun status(speakerIp: String): Result<JSONObject> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder()
+                .url("http://$speakerIp:8080/status")
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                JSONObject(response.body?.string().orEmpty())
             }
         }
     }
@@ -50,7 +59,7 @@ class R1ApiClient {
 
             httpClient.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
-                    "Đã gửi cấu hình Wi‑Fi tới R1. Đang chờ loa kết nối mạng nhà."
+                    "Đã gửi cấu hình Wi‑Fi tới R1."
                 } else {
                     "R1 từ chối cấu hình Wi‑Fi: HTTP ${response.code}"
                 }
