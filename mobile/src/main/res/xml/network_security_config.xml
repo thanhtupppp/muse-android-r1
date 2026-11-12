@@ -1,8 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- The R1 Agent exposes its local diagnostic/provisioning API on this
-         fixed hotspot address. Keep cleartext HTTP scoped to this host only. -->
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">192.168.43.1</domain>
-    </domain-config>
+    <!-- The mobile app talks to the R1 Agent over its private setup hotspot
+         and the user's private home LAN. R1 may receive any DHCP address,
+         so an IP-specific domain-config is not sufficient. -->
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>
