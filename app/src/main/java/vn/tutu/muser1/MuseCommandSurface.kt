@@ -41,7 +41,7 @@ class MuseCommandSurface(private val context: Context) {
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
             ?: return errorResponse("AudioManager not available")
         val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        val targetVolume = (volume * maxVolume) / 100
+        val targetVolume = if (volume == 0) 0 else ((volume * maxVolume + 50) / 100).coerceIn(1, maxVolume)
 
         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVolume, 0)
 

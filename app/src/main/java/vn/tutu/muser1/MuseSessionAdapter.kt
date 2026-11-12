@@ -36,19 +36,25 @@ class MuseSessionAdapter(
 
     private var webSocket: WebSocket? = null
     private var currentVm: MuseApi.MuseVm? = null
+    @Volatile
+    private var isRunning: Boolean = false
 
     fun start() {
-        Thread {
+        if (isRunning) return
+        isRunning = true
+        Thread({
             try {
                 refreshTokensIfNeeded()
+                if (!isRunning) return@Thread
                 selectAndConnectVm()
             } catch (error: Exception) {
                 Log.e(TAG, "Muse session startup failed", error)
             }
-        }.start()
+        }, "MuseSessionAdapterThread").start()
     }
 
     fun stop() {
+        isRunning = false
         webSocket?.close(1000, "Agent stopping")
         webSocket = null
         currentVm = null

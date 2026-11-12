@@ -106,7 +106,14 @@ class R1Installer(private val context: Context) {
             onProgress("1/5: Đang kết nối ADB $host:5555...", 0.05f)
             val (socket, connection) = openConnection(host, 5555)
             try {
-                onProgress("2/5: Đã bắt tay ADB. Đang truyền APK...", 0.15f)
+                // Xóa APK cũ trên loa nếu có để tránh đụng quyền hoặc lỗi ghi đè
+                runCatching {
+                    val cleanStream = connection.open("shell:rm -f $path")
+                    readShell(cleanStream, timeoutMs = 3000)
+                }
+
+                val maxDataInfo = runCatching { connection.maxData }.getOrDefault(4096)
+                onProgress("2/5: Đã bắt tay ADB (maxData=$maxDataInfo). Đang truyền APK...", 0.15f)
                 pushApk(connection, apkFile, path) { pushed, total ->
                     val fraction = pushed.toFloat() / total
                     onProgress("3/5: Truyền APK ${(fraction * 100).toInt()}%", 0.20f + fraction * 0.55f)
@@ -267,30 +274,80 @@ class R1Installer(private val context: Context) {
     }
 
     private fun pushApk(
-        connection: AdbConnection, apkFile: File, remotePath: String,
+        connection: AdbConnection,
+        apkFile: File,
+        remotePath: String,
         onByteProgress: (Long, Long) -> Unit
     ) {
         val stream = connection.open("sync:")
         try {
             val path = "$remotePath,33188".toByteArray(Charsets.UTF_8)
-            stream.write(packet("SEND", path.size, path))
+            try {
+                stream.write(packet("SEND", path.size, path))
+            } catch (e: IOException) {
+                checkSyncFailMessage(stream, e)
+            }
+
+            // Android 5.1 (Lollipop) trên R1 có MAX_PAYLOAD cố định 4096 bytes.
+            // Phải giới hạn kích thước chunk DATA để tổng gói (packet + payload) không vượt quá maxData.
+            val maxChunk = try {
+                (connection.maxData - 64).coerceIn(1024, 61440)
+            } catch (_: Exception) {
+                4000
+            }
+
             var pushed = 0L
             var last = -1
             apkFile.inputStream().use { input ->
-                val buffer = ByteArray(8192)
+                val buffer = ByteArray(maxChunk)
                 while (true) {
                     val count = input.read(buffer)
                     if (count < 0) break
-                    stream.write(packet("DATA", count, buffer, 0, count))
+                    try {
+                        stream.write(packet("DATA", count, buffer, 0, count))
+                    } catch (e: IOException) {
+                        checkSyncFailMessage(stream, e)
+                    }
                     pushed += count
                     val percent = ((pushed * 100) / apkFile.length()).toInt()
-                    if (percent != last) { last = percent; onByteProgress(pushed, apkFile.length()) }
+                    if (percent != last) {
+                        last = percent
+                        onByteProgress(pushed, apkFile.length())
+                    }
                 }
             }
-            stream.write(packet("DONE", (System.currentTimeMillis() / 1000).toInt()))
+            try {
+                stream.write(packet("DONE", (System.currentTimeMillis() / 1000).toInt()))
+            } catch (e: IOException) {
+                checkSyncFailMessage(stream, e)
+            }
             readSyncResponse(stream)
             try { stream.write(packet("QUIT", 0)) } catch (_: IOException) {}
-        } finally { try { stream.close() } catch (_: Exception) {} }
+        } finally {
+            try { stream.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun checkSyncFailMessage(stream: AdbStream, original: IOException): Nothing {
+        val detail = runCatching {
+            val chunk = stream.read()
+            if (chunk.size >= 8) {
+                val id = String(chunk, 0, 4, Charsets.US_ASCII)
+                val size = (chunk[4].toInt() and 255) or
+                    ((chunk[5].toInt() and 255) shl 8) or
+                    ((chunk[6].toInt() and 255) shl 16) or
+                    ((chunk[7].toInt() and 255) shl 24)
+                if (id == "FAIL" && chunk.size >= 8 + size) {
+                    String(chunk, 8, size, Charsets.UTF_8)
+                } else null
+            } else null
+        }.getOrNull()
+
+        if (!detail.isNullOrBlank()) {
+            throw IOException("ADB sync error: $detail", original)
+        } else {
+            throw original
+        }
     }
 
     private fun readSyncResponse(stream: AdbStream) {

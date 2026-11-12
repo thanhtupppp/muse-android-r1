@@ -3,7 +3,6 @@ package vn.tutu.muser1
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.net.wifi.WifiManager
 import android.util.Log
 
 /**
@@ -16,13 +15,14 @@ import android.util.Log
  * Cấu hình Muse token:
  * adb shell am broadcast -a vn.tutu.muser1.CONFIGURE_MUSE \
  *   --es muse_token "mgst_..."
+ * (hoặc dùng action vn.tutu.muser1.CONFIGURE_AGENT)
  */
 class ProvisionReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             ACTION_PROVISION_WIFI -> provisionWifi(context, intent)
-            ACTION_CONFIGURE_MUSE -> configureMuse(context, intent)
+            ACTION_CONFIGURE_MUSE, ACTION_CONFIGURE_AGENT -> configureMuse(context, intent)
         }
     }
 
@@ -30,13 +30,24 @@ class ProvisionReceiver : BroadcastReceiver() {
         val ssid = intent.getStringExtra(EXTRA_SSID)?.trim().orEmpty()
         val password = intent.getStringExtra(EXTRA_PASSWORD).orEmpty()
 
-        if (ssid.isEmpty() || password.length < 8) {
-            Log.e(TAG, "Invalid Wi‑Fi provisioning payload")
+        if (ssid.isEmpty() || ssid.contains('\r') || ssid.contains('\n')) {
+            Log.e(TAG, "Invalid SSID in Wi‑Fi provisioning broadcast")
+            return
+        }
+
+        if (password.contains('\r') || password.contains('\n')) {
+            Log.e(TAG, "Password contains invalid newline characters")
+            return
+        }
+
+        val isHexPsk = password.length == 64 && password.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
+        if (password.isNotEmpty() && password.length !in 8..63 && !isHexPsk) {
+            Log.e(TAG, "Invalid Wi‑Fi password length (must be empty for open or 8-63 chars / 64 hex)")
             return
         }
 
         val result = WifiProvisioner.connect(context, ssid, password)
-        Log.i(TAG, "Wi‑Fi provisioning result: $result")
+        Log.i(TAG, "Wi‑Fi provisioning broadcast result: $result")
     }
 
     private fun configureMuse(context: Context, intent: Intent) {
@@ -60,6 +71,7 @@ class ProvisionReceiver : BroadcastReceiver() {
 
         const val ACTION_PROVISION_WIFI = "vn.tutu.muser1.PROVISION_WIFI"
         const val ACTION_CONFIGURE_MUSE = "vn.tutu.muser1.CONFIGURE_MUSE"
+        const val ACTION_CONFIGURE_AGENT = "vn.tutu.muser1.CONFIGURE_AGENT"
 
         const val EXTRA_SSID = "ssid"
         const val EXTRA_PASSWORD = "password"

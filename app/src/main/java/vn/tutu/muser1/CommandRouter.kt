@@ -44,7 +44,7 @@ class CommandRouter(private val context: Context) {
 
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        val targetVolume = (value * maxVolume) / 100
+        val targetVolume = if (value == 0) 0 else ((value * maxVolume + 50) / 100).coerceIn(1, maxVolume)
 
         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVolume, 0)
         Log.i(TAG, "Volume set to $value% ($targetVolume/$maxVolume)")
