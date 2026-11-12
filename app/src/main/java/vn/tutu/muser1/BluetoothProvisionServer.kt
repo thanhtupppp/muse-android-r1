@@ -22,6 +22,8 @@ class BluetoothProvisionServer(
             UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
 
         private const val SERVICE_NAME = "Muse R1 Provisioning"
+        private const val BLUETOOTH_ENABLE_TIMEOUT_MS = 15_000L
+        private const val BLUETOOTH_POLL_INTERVAL_MS = 500L
     }
 
     @Suppress("DEPRECATION")
@@ -38,9 +40,8 @@ class BluetoothProvisionServer(
         if (isRunning) return
 
         val adapter = bluetoothAdapter
-
-        if (adapter == null || !adapter.isEnabled) {
-            Log.w(TAG, "Bluetooth không khả dụng hoặc đang tắt")
+        if (adapter == null) {
+            Log.e(TAG, "Thiết bị R1 không có Bluetooth adapter")
             return
         }
 
@@ -48,16 +49,51 @@ class BluetoothProvisionServer(
 
         Thread({
             try {
+                // Phicomm R1 chạy Android 5.1.1: Agent có thể bật Bluetooth
+                // trực tiếp bằng BLUETOOTH_ADMIN trước khi mở máy chủ SPP.
+                if (!adapter.isEnabled) {
+                    Log.i(TAG, "Bluetooth đang tắt; Agent đang yêu cầu bật Bluetooth")
+
+                    @Suppress("DEPRECATION")
+                    val enableRequested = adapter.enable()
+
+                    if (!enableRequested) {
+                        Log.e(TAG, "Không thể yêu cầu hệ thống bật Bluetooth")
+                        return@Thread
+                    }
+
+                    val deadline = System.currentTimeMillis() +
+                        BLUETOOTH_ENABLE_TIMEOUT_MS
+
+                    while (isRunning && !adapter.isEnabled &&
+                        System.currentTimeMillis() < deadline
+                    ) {
+                        Thread.sleep(BLUETOOTH_POLL_INTERVAL_MS)
+                    }
+                }
+
+                if (!isRunning) return@Thread
+
+                if (!adapter.isEnabled) {
+                    Log.e(TAG, "Bluetooth vẫn chưa bật sau thời gian chờ")
+                    return@Thread
+                }
+
                 serverSocket = adapter.listenUsingRfcommWithServiceRecord(
                     SERVICE_NAME,
                     MUSE_R1_SPP_UUID
                 )
 
-                Log.d(TAG, "Bluetooth SPP server đã sẵn sàng")
+                Log.i(TAG, "Bluetooth SPP server đã sẵn sàng")
 
                 while (isRunning) {
                     val socket = serverSocket?.accept() ?: break
                     handleClient(socket)
+                }
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                if (isRunning) {
+                    Log.w(TAG, "Luồng Bluetooth bị gián đoạn", e)
                 }
             } catch (e: IOException) {
                 if (isRunning) {
@@ -65,6 +101,7 @@ class BluetoothProvisionServer(
                 }
             } finally {
                 closeServer()
+                isRunning = false
             }
         }, "BluetoothProvisionServerThread").start()
     }
@@ -86,7 +123,7 @@ class BluetoothProvisionServer(
                 val password = request["password"]
                     ?: throw IOException("Thiếu mật khẩu")
 
-                Log.d(TAG, "Nhận yêu cầu cấu hình Wi‑Fi")
+                Log.d(TAG, "Nhận yêu cầu cấu hình Wi-Fi")
 
                 val success = wifiProvisioner.connect(
                     context = context,
@@ -95,11 +132,11 @@ class BluetoothProvisionServer(
                 )
 
                 if (success) {
-                    writeResponse(connection, "OK\n")
-                    Log.d(TAG, "Đã gửi cấu hình Wi‑Fi thành công")
+                    writeResponse(connection, "OK\\n")
+                    Log.d(TAG, "Đã gửi cấu hình Wi-Fi thành công")
                 } else {
-                    writeResponse(connection, "ERROR: Không kết nối được Wi‑Fi\n")
-                    Log.w(TAG, "Kết nối Wi‑Fi thất bại")
+                    writeResponse(connection, "ERROR: Không kết nối được Wi-Fi\\n")
+                    Log.w(TAG, "Kết nối Wi-Fi thất bại")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Lỗi xử lý Bluetooth client", e)
@@ -107,7 +144,7 @@ class BluetoothProvisionServer(
                 try {
                     writeResponse(
                         connection,
-                        "ERROR: ${e.message ?: "Lỗi không xác định"}\n"
+                        "ERROR: ${e.message ?: "Lỗi không xác định"}\\n"
                     )
                 } catch (_: Exception) {
                 }
@@ -125,7 +162,7 @@ class BluetoothProvisionServer(
             if (read == -1) break
 
             builder.append(String(buffer, 0, read, Charsets.UTF_8))
-            if (builder.endsWith("END\n") || builder.endsWith("END")) break
+            if (builder.endsWith("END\\n") || builder.endsWith("END")) break
         }
 
         return builder.toString()
@@ -172,4 +209,3 @@ class BluetoothProvisionServer(
         }
     }
 }
-
