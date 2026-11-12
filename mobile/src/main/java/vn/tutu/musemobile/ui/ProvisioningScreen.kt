@@ -60,13 +60,33 @@ fun ProvisioningScreen(
             is ProvisioningState.Provisioning -> {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 Spacer(modifier = Modifier.height(16.dp))
-                Text("Đã gửi cấu hình Wi‑Fi qua Bluetooth. R1 đang kết nối mạng nhà...")
+                Text("Đang gửi cấu hình Wi‑Fi tới R1...")
+                Spacer(modifier = Modifier.height(16.dp))
+                OutlinedButton(onClick = {
+                    viewModel.retry()
+                    onBack()
+                }) {
+                    Text("Hủy")
+                }
             }
 
             is ProvisioningState.WaitingForR1 -> {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 Spacer(modifier = Modifier.height(16.dp))
                 Text("Đang xác nhận R1 đã kết nối Wi‑Fi nhà...")
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Hãy chuyển Wi‑Fi điện thoại về mạng nhà để tìm thấy loa.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                OutlinedButton(onClick = {
+                    viewModel.retry()
+                    onBack()
+                }) {
+                    Text("Hủy / Quay lại")
+                }
             }
 
             is ProvisioningState.Success -> {

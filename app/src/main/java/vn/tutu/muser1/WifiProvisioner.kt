@@ -76,22 +76,24 @@ object WifiProvisioner {
                         return ProvisionResult.Failure("SOFTAP_DISABLE_FAILED")
                     }
                     apWasDisabledByUs = true
-                    Log.i(TAG, "Đã gửi yêu cầu tắt SoftAP; chờ chuyển radio sang Wi-Fi client")
-                }
+                    Log.i(TAG, "Đã gửi yêu cầu tắt SoftAP; chờ radio hoàn tất tắt hotspot")
 
-                val radioDeadline = System.currentTimeMillis() + RADIO_SWITCH_TIMEOUT_MS
-                while (System.currentTimeMillis() < radioDeadline && !wifiManager.isWifiEnabled) {
-                    Thread.sleep(CONNECT_POLL_INTERVAL_MS)
+                    val apDeadline = System.currentTimeMillis() + 8_000L
+                    while (System.currentTimeMillis() < apDeadline) {
+                        val state = getWifiApState(wifiManager)
+                        if (state == 11 || state == null) break // WIFI_AP_STATE_DISABLED = 11
+                        Thread.sleep(300)
+                    }
                 }
 
                 if (!wifiManager.isWifiEnabled) {
-                    Log.i(TAG, "SoftAP state sau khi yêu cầu tắt=${getWifiApState(wifiManager)}; bật Wi-Fi client")
+                    Log.i(TAG, "SoftAP đã tắt; đang bật Wi-Fi client (STA)")
                     if (!wifiManager.setWifiEnabled(true)) {
                         return ProvisionResult.Failure("WIFI_ENABLE_FAILED", apWasDisabledByUs)
                     }
-                    val enableDeadline = System.currentTimeMillis() + RADIO_SWITCH_TIMEOUT_MS
+                    val enableDeadline = System.currentTimeMillis() + 10_000L
                     while (System.currentTimeMillis() < enableDeadline && !wifiManager.isWifiEnabled) {
-                        Thread.sleep(CONNECT_POLL_INTERVAL_MS)
+                        Thread.sleep(500)
                     }
                 }
 
@@ -114,14 +116,6 @@ object WifiProvisioner {
 
                     allowedKeyManagement.clear()
                     allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK)
-                    allowedAuthAlgorithms.clear()
-                    allowedAuthAlgorithms.set(WifiConfiguration.AuthAlgorithm.OPEN)
-                    allowedPairwiseCiphers.clear()
-                    allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.TKIP)
-                    allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.CCMP)
-                    allowedGroupCiphers.clear()
-                    allowedGroupCiphers.set(WifiConfiguration.GroupCipher.TKIP)
-                    allowedGroupCiphers.set(WifiConfiguration.GroupCipher.CCMP)
                     allowedProtocols.clear()
                     allowedProtocols.set(WifiConfiguration.Protocol.WPA)
                     allowedProtocols.set(WifiConfiguration.Protocol.RSN)
@@ -151,6 +145,7 @@ object WifiProvisioner {
             }
 
             wifiManager.saveConfiguration()
+            wifiManager.reconnect()
 
             val ip = waitForConnection(wifiManager, cleanSsid)
             if (ip != null) {

@@ -46,7 +46,10 @@ fun WifiPickerScreen(
 ) {
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
-    val networks = viewModel.wifiNetworks
+    val networks = viewModel.wifiNetworks.filter {
+        !it.ssid.startsWith("Phicomm_R1_", ignoreCase = true) &&
+            !it.ssid.startsWith("PhiWiFi-", ignoreCase = true)
+    }
     val selectedNetwork = viewModel.selectedNetwork
 
     LaunchedEffect(Unit) {

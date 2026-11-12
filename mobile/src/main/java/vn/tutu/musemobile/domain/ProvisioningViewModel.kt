@@ -3,6 +3,7 @@ package vn.tutu.musemobile.domain
 import android.annotation.SuppressLint
 import android.app.Application
 import android.bluetooth.BluetoothDevice
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -189,6 +190,11 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
             return
         }
 
+        if (network.ssid.startsWith("Phicomm_R1_", ignoreCase = true) || network.ssid.startsWith("PhiWiFi-", ignoreCase = true)) {
+            state = ProvisioningState.Failure("Không thể chọn trạm phát của chính loa R1. Vui lòng chọn Wi‑Fi nhà của router.", code = "INVALID_NETWORK")
+            return
+        }
+
         val isOpen = network.isOpen
         val isHexPsk = password.length == 64 && password.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
         if (!isOpen && (password.length !in 8..63 && !isHexPsk)) {
@@ -199,10 +205,35 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         viewModelScope.launch {
             state = ProvisioningState.Provisioning
 
+            // 1. Thử gửi trực tiếp qua HTTP (khi điện thoại đang nối Wi-Fi Phicomm_R1_xxx)
+            val targetHttpIp = if (speakerIp.isNotBlank()) speakerIp.trim() else "192.168.43.1"
+            val isHttpAvailable = runCatching {
+                apiClient.health(targetHttpIp).getOrDefault(false)
+            }.getOrDefault(false)
+
+            if (isHttpAvailable) {
+                status = "Đang gửi cấu hình Wi‑Fi tới R1 qua HTTP ($targetHttpIp:8080)..."
+                val httpResult = apiClient.provisionWifi(
+                    speakerIp = targetHttpIp,
+                    ssid = network.ssid,
+                    password = password,
+                    security = network.security
+                )
+
+                if (httpResult.isSuccess) {
+                    status = "R1 đã nhận cấu hình Wi‑Fi! Đang đợi R1 kết nối vào mạng ${network.ssid}..."
+                    waitForR1OnHomeNetwork(targetSsid = network.ssid)
+                    return@launch
+                } else {
+                    Log.w("Provisioning", "HTTP provision thất bại: ${httpResult.exceptionOrNull()?.message}, thử Bluetooth...")
+                }
+            }
+
+            // 2. Dự phòng: Thử gửi qua Bluetooth
             val device = bluetoothDevice ?: bluetoothProvisioner.findR1Device().getOrElse {
                 state = ProvisioningState.Failure(
-                    it.message ?: "Chưa chọn Muse R1 qua Bluetooth",
-                    code = "BLUETOOTH_NOT_FOUND"
+                    "Không thể gửi cấu hình tới loa: Không có kết nối HTTP tới $targetHttpIp và chưa ghép đôi Bluetooth với R1. Hãy kết nối Wi‑Fi điện thoại vào mạng loa (Phicomm_R1_xxx) rồi thử lại.",
+                    code = "NO_TRANSPORT_AVAILABLE"
                 )
                 return@launch
             }
@@ -219,18 +250,16 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                     if (!ip.isNullOrBlank()) {
                         speakerIp = ip
                         status = "R1 đã kết nối Wi‑Fi nhà tại $ip! Đang kiểm tra kết nối..."
-                        waitForR1OnHomeNetwork(knownIp = ip)
+                        waitForR1OnHomeNetwork(knownIp = ip, targetSsid = network.ssid)
                     } else {
                         status = "Đã nhận xác nhận Bluetooth từ R1. Đang xác minh trên Wi‑Fi nhà..."
-                        waitForR1OnHomeNetwork()
+                        waitForR1OnHomeNetwork(targetSsid = network.ssid)
                     }
                 },
                 onFailure = { error ->
-                    // The R1 may switch off its setup hotspot before the Bluetooth
-                    // response reaches the phone. Verify on the home LAN before failing.
-                    status = "Mất xác nhận Bluetooth (${error.message ?: "không rõ lỗi"}). Đang thử tìm R1 trên Wi‑Fi nhà..."
-                    waitForR1OnHomeNetwork(
-                        bluetoothError = error.message ?: "Không nhận được xác nhận Bluetooth"
+                    state = ProvisioningState.Failure(
+                        "Gửi cấu hình qua Bluetooth thất bại (${error.message ?: "ngắt kết nối"}). Vui lòng kết nối Wi‑Fi điện thoại vào trạm phát của loa (Phicomm_R1_xxx) để truyền trực tiếp qua Wi‑Fi.",
+                        code = "BLUETOOTH_FAILED"
                     )
                 }
             )
@@ -239,17 +268,18 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
 
     private suspend fun waitForR1OnHomeNetwork(
         bluetoothError: String? = null,
-        knownIp: String? = null
+        knownIp: String? = null,
+        targetSsid: String? = null
     ) {
         state = ProvisioningState.WaitingForR1
+        val netName = targetSsid ?: selectedNetwork?.ssid ?: "Wi‑Fi nhà"
         status = when {
             knownIp != null -> "R1 đã báo IP $knownIp. Đang kết nối thử..."
-            bluetoothError == null -> "R1 đang kết nối Wi‑Fi nhà. Đang tìm R1 qua mạng nội bộ..."
-            else -> "Bluetooth bị ngắt; đang xác minh R1 qua Wi‑Fi nhà. Hãy để điện thoại kết nối router nhà."
+            else -> "R1 đang kết nối vào $netName. Vui lòng chuyển Wi‑Fi điện thoại sang mạng $netName để tìm loa..."
         }
 
-        // Nếu loa đã gửi lại IP thật qua Bluetooth, probe trực tiếp trước
-        if (knownIp != null) {
+        // Nếu loa đã gửi lại IP thật qua Bluetooth, probe trực tiếp trước (bỏ qua IP trạm phát hotspot 192.168.43.x)
+        if (knownIp != null && !knownIp.startsWith("192.168.43.")) {
             repeat(6) {
                 delay(1500)
                 val health = apiClient.health(knownIp)
@@ -264,7 +294,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         repeat(24) {
             delay(5000)
             val discovered = discoveryClient.discover()
-            if (discovered != null) {
+            if (discovered != null && !discovered.ipAddress.startsWith("192.168.43.")) {
                 state = ProvisioningState.Success(discovered.ipAddress)
                 status = "Đã xác minh R1 trên Wi‑Fi nhà: " + discovered.ipAddress
                 return
@@ -273,11 +303,11 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
 
         state = ProvisioningState.Failure(
             message = if (bluetoothError == null) {
-                "Không tìm thấy R1 trên Wi‑Fi nhà sau 2 phút. Hãy kết nối điện thoại vào Wi‑Fi nhà rồi thử lại."
+                "Không tìm thấy R1 trên Wi‑Fi nhà sau 2 phút. Hãy kiểm tra mật khẩu và đảm bảo điện thoại đã kết nối vào cùng mạng Wi‑Fi nhà."
             } else {
-                "Không nhận được xác nhận Bluetooth và cũng không tìm thấy R1 trên Wi‑Fi nhà. Bluetooth: $bluetoothError. Hãy kết nối điện thoại vào Wi‑Fi nhà rồi xác minh lại."
+                "Loa chưa kết nối được Wi‑Fi nhà ($bluetoothError). Hãy đảm bảo mật khẩu đúng và điện thoại đang kết nối Wi‑Fi nhà."
             },
-            code = if (bluetoothError == null) "DISCOVERY_TIMEOUT" else "BLUETOOTH_TIMEOUT"
+            code = if (bluetoothError == null) "DISCOVERY_TIMEOUT" else "PROVISION_FAILED"
         )
     }
 
