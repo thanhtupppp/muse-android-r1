@@ -15,6 +15,9 @@ import vn.tutu.musemobile.data.R1ApiClient
 import vn.tutu.musemobile.data.R1DiscoveryClient
 import vn.tutu.musemobile.data.R1Installer
 import vn.tutu.musemobile.data.WifiScanner
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class ProvisioningViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -33,6 +36,24 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     var isApkDownloaded by mutableStateOf(installer.hasLocalApk())
         private set
 
+    var isInstalling by mutableStateOf(false)
+        private set
+
+    var installProgress by mutableStateOf<Float?>(null)
+        private set
+
+    var installStage by mutableStateOf("")
+        private set
+
+    var installLogs by mutableStateOf<List<String>>(emptyList())
+        private set
+
+    var isDownloading by mutableStateOf(false)
+        private set
+
+    var downloadProgress by mutableStateOf<Int?>(null)
+        private set
+
     fun hasLocalApk(): Boolean = installer.hasLocalApk()
 
     var wifiNetworks by mutableStateOf<List<WifiNetwork>>(emptyList())
@@ -42,6 +63,11 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     private var speakerIp = "192.168.43.1"
     private var password = ""
     private var bluetoothDevice: BluetoothDevice? = null
+
+    private fun addInstallLog(msg: String) {
+        val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+        installLogs = installLogs + "[$time] $msg"
+    }
 
     @SuppressLint("MissingPermission")
     fun selectBluetoothDevice(device: BluetoothDevice) {
@@ -167,48 +193,98 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun downloadAgentApk(apkUrl: String) {
+        if (isDownloading) return
+        isDownloading = true
+        downloadProgress = 0
         viewModelScope.launch {
-            status = "Bắt đầu tải APK từ: $apkUrl"
-            installer.downloadAgentApk(apkUrl) { percent ->
-                status = "Đang tải APK: $percent%"
-            }.onSuccess { file ->
-                isApkDownloaded = true
-                val sizeMb = String.format("%.2f", file.length() / (1024.0 * 1024.0))
-                status = "Đã lưu APK ($sizeMb MB) vào máy! Hãy đổi Wi‑Fi sang Phicomm_R1_xxx rồi bấm Cài APK."
-            }.onFailure { error ->
-                status = "Tải APK thất bại: ${error.message}. Hãy kiểm tra Internet (Wi‑Fi nhà / 4G) hoặc URL."
+            try {
+                status = "Bắt đầu tải APK từ: $apkUrl"
+                installer.downloadAgentApk(apkUrl) { percent ->
+                    downloadProgress = percent
+                    status = "Đang tải APK: $percent%"
+                }.onSuccess { file ->
+                    isApkDownloaded = true
+                    val sizeMb = String.format("%.2f", file.length() / (1024.0 * 1024.0))
+                    status = "Đã lưu APK ($sizeMb MB) vào máy! Hãy đổi Wi‑Fi sang Phicomm_R1_xxx rồi bấm Cài APK."
+                }.onFailure { error ->
+                    status = "Tải APK thất bại: ${error.message}. Hãy kiểm tra Internet (Wi‑Fi nhà / 4G) hoặc URL."
+                }
+            } finally {
+                isDownloading = false
+                downloadProgress = null
             }
         }
     }
 
     fun installR1Agent(apkUrl: String) {
-        viewModelScope.launch {
-            val localApk = if (installer.hasLocalApk()) {
-                val file = installer.getLocalApkFile()
-                val sizeMb = String.format("%.2f", file.length() / (1024.0 * 1024.0))
-                status = "Sử dụng file APK offline có sẵn ($sizeMb MB)..."
-                file
-            } else {
-                status = "Chưa có file APK offline. Đang tải từ URL..."
-                val downloadResult = installer.downloadAgentApk(apkUrl) { percent ->
-                    status = "Đang tải APK: $percent%"
-                }
-                if (downloadResult.isFailure) {
-                    status = "Không thể tải APK (do mất mạng khi kết nối Wi‑Fi R1). Hãy kết nối lại Wi‑Fi nhà hoặc 4G rồi bấm 'Tải APK về máy' trước!"
-                    return@launch
-                }
-                isApkDownloaded = true
-                downloadResult.getOrThrow()
-            }
+        if (isInstalling) return
+        isInstalling = true
+        installProgress = null
+        installStage = "Chuẩn bị cài đặt..."
+        installLogs = emptyList()
 
-            status = "Đang kết nối ADB tới R1 ($speakerIp:5555)..."
-            installer.installAgent(
-                speakerIp = speakerIp,
-                apkFile = localApk
-            ) { message ->
-                status = message
-            }.onFailure { error ->
-                status = "Lỗi cài Agent qua ADB: ${error.message}"
+        viewModelScope.launch {
+            try {
+                addInstallLog("Bắt đầu quy trình cài đặt Agent lên R1")
+                val localApk = if (installer.hasLocalApk()) {
+                    val file = installer.getLocalApkFile()
+                    val sizeMb = String.format("%.2f", file.length() / (1024.0 * 1024.0))
+                    val logMsg = "Sử dụng file APK offline có sẵn ($sizeMb MB)"
+                    status = logMsg
+                    addInstallLog(logMsg)
+                    file
+                } else {
+                    val logMsg = "Chưa có file APK offline. Đang tải từ URL..."
+                    status = logMsg
+                    addInstallLog(logMsg)
+                    isDownloading = true
+                    val downloadResult = installer.downloadAgentApk(apkUrl) { percent ->
+                        downloadProgress = percent
+                        installStage = "Đang tải APK về máy: $percent%"
+                    }
+                    isDownloading = false
+                    downloadProgress = null
+                    if (downloadResult.isFailure) {
+                        val err = downloadResult.exceptionOrNull()?.message ?: "Lỗi tải APK"
+                        val failMsg = "Không thể tải APK. Hãy kết nối Wi‑Fi nhà/4G và bấm 'Tải APK về máy' trước!"
+                        status = failMsg
+                        addInstallLog("❌ Lỗi: $err")
+                        addInstallLog(failMsg)
+                        installStage = "Thất bại: Mất kết nối internet"
+                        return@launch
+                    }
+                    isApkDownloaded = true
+                    addInstallLog("Đã tải APK thành công")
+                    downloadResult.getOrThrow()
+                }
+
+                status = "Đang kết nối ADB tới R1 ($speakerIp:5555)..."
+                val result = installer.installAgent(
+                    speakerIp = speakerIp,
+                    apkFile = localApk
+                ) { message, progress ->
+                    installStage = message
+                    installProgress = progress
+                    status = message
+                    addInstallLog(message)
+                }
+
+                result.fold(
+                    onSuccess = {
+                        status = "Cài đặt hoàn tất! Hãy kiểm tra kết nối R1 hoặc chọn Wi-Fi để tiếp tục."
+                        installStage = "Hoàn tất cài đặt Muse R1 Agent!"
+                        installProgress = 1.0f
+                        addInstallLog("✅ Hoàn tất thành công!")
+                    },
+                    onFailure = { error ->
+                        val errMsg = error.message ?: "Lỗi không xác định"
+                        status = "Lỗi cài Agent qua ADB: $errMsg"
+                        installStage = "Lỗi cài đặt!"
+                        addInstallLog("❌ Thất bại: $errMsg")
+                    }
+                )
+            } finally {
+                isInstalling = false
             }
         }
     }

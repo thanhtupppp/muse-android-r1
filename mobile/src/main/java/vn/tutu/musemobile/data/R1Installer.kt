@@ -55,12 +55,16 @@ class R1Installer(
                         val buffer = ByteArray(8192)
                         var read: Int
                         var downloaded = 0L
+                        var lastReportedPercent = -1
                         while (input.read(buffer).also { read = it } != -1) {
                             output.write(buffer, 0, read)
                             downloaded += read
                             if (total > 0) {
                                 val percent = ((downloaded * 100) / total).toInt()
-                                onProgress(percent)
+                                if (percent != lastReportedPercent) {
+                                    lastReportedPercent = percent
+                                    onProgress(percent)
+                                }
                             }
                         }
                         output.flush()
@@ -81,45 +85,80 @@ class R1Installer(
     suspend fun installAgent(
         speakerIp: String,
         apkFile: File,
-        onProgress: (String) -> Unit = {}
+        onProgress: (message: String, progress: Float?) -> Unit = { _, _ -> }
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
+            if (!apkFile.exists() || apkFile.length() < 50_000) {
+                throw IOException("File APK không hợp lệ hoặc kích thước quá nhỏ (${apkFile.length()} bytes)")
+            }
+            val apkSizeMb = String.format("%.2f MB", apkFile.length() / (1024.0 * 1024.0))
+
             val host = speakerIp.trim()
             val port = 5555
-            onProgress("Đang kết nối ADB tới R1 ($host:$port)...")
-            Socket().apply {
-                connect(InetSocketAddress(host, port), 10_000)
-                soTimeout = 30_000
-            }.use { socket ->
+            onProgress("1/5: Đang kết nối TCP tới loa R1 ($host:$port)...", 0.05f)
+
+            val socket = try {
+                Socket().apply {
+                    connect(InetSocketAddress(host, port), 8_000)
+                    soTimeout = 30_000
+                }
+            } catch (e: Exception) {
+                throw IOException(
+                    "Không thể kết nối đến $host:$port (${e.message ?: "timeout"}). " +
+                    "Hãy chắc chắn bạn đã kết nối Wi‑Fi vào 'Phicomm_R1_xxx' và loa đã bật cổng ADB 5555.",
+                    e
+                )
+            }
+
+            socket.use { s ->
+                onProgress("2/5: Bắt tay xác thực ADB với loa R1...", 0.15f)
                 val crypto = getOrCreateAdbCrypto()
-                val connection = AdbConnection.create(socket, crypto)
-                connection.connect()
-                onProgress("Đã kết nối ADB tới R1")
+                val connection = AdbConnection.create(s, crypto)
+                try {
+                    connection.connect()
+                } catch (e: Exception) {
+                    throw IOException("Xác thực ADB thất bại: ${e.message}", e)
+                }
+                onProgress("Đã thiết lập kết nối ADB thành công!", 0.20f)
 
                 val remotePath = "/data/local/tmp/muse_r1_agent.apk"
-                onProgress("Đang đẩy APK lên R1...")
+                onProgress("3/5: Bắt đầu truyền APK ($apkSizeMb) lên $remotePath...", 0.20f)
+
                 pushApk(
                     connection = connection,
                     apkFile = apkFile,
                     remotePath = remotePath
-                )
+                ) { pushedBytes, totalBytes ->
+                    val fraction = pushedBytes.toFloat() / totalBytes.toFloat()
+                    val percent = (fraction * 100).toInt()
+                    val pushedMb = String.format("%.2f", pushedBytes / (1024.0 * 1024.0))
+                    val totalMb = String.format("%.2f", totalBytes / (1024.0 * 1024.0))
+                    val currentProgress = 0.20f + fraction * 0.55f
+                    onProgress("Đang đẩy file APK: $pushedMb / $totalMb MB ($percent%)", currentProgress)
+                }
 
-                onProgress("Đang cài APK lên R1...")
+                onProgress("Đã đẩy file APK thành công. Xác nhận kênh Sync OKAY...", 0.75f)
+
+                onProgress("4/5: Đang thực thi: pm install -r $remotePath... (Vui lòng đợi 5-15 giây)", 0.80f)
                 val installOutput = runShell(
                     connection = connection,
                     command = "pm install -r $remotePath"
                 )
                 Log.d("R1Installer", "Install output: $installOutput")
-                if (!installOutput.contains("Success", ignoreCase = true)) {
-                    throw IOException("Cài APK thất bại: $installOutput")
-                }
 
-                onProgress("Đang khởi động Muse R1 Agent...")
-                runShell(
+                if (!installOutput.contains("Success", ignoreCase = true)) {
+                    throw IOException("Lệnh 'pm install' thất bại: ${installOutput.trim()}")
+                }
+                onProgress("Cài đặt APK thành công! (pm install: Success)", 0.90f)
+
+                onProgress("5/5: Đang khởi động Muse R1 Agent Service...", 0.95f)
+                val launchOutput = runShell(
                     connection = connection,
                     command = "monkey -p vn.tutu.muser1 -c android.intent.category.LAUNCHER 1; am startservice vn.tutu.muser1/.AgentService"
                 )
-                onProgress("Đã cài và khởi động Muse R1 Agent")
+                Log.d("R1Installer", "Launch output: $launchOutput")
+
+                onProgress("Hoàn tất! Muse R1 Agent đã được cài đặt và khởi động trên loa.", 1.0f)
             }
         }
     }
@@ -147,7 +186,8 @@ class R1Installer(
     private fun pushApk(
         connection: AdbConnection,
         apkFile: File,
-        remotePath: String
+        remotePath: String,
+        onByteProgress: (pushed: Long, total: Long) -> Unit = { _, _ -> }
     ) {
         val stream = connection.open("sync:")
         try {
@@ -159,6 +199,10 @@ class R1Installer(
             System.arraycopy(pathBytes, 0, sendHeader, 8, pathBytes.size)
             stream.write(sendHeader)
 
+            val totalBytes = apkFile.length()
+            var pushedBytes = 0L
+            var lastReportedPercent = -1
+
             apkFile.inputStream().use { input ->
                 val buffer = ByteArray(8192)
                 var read: Int
@@ -168,6 +212,15 @@ class R1Installer(
                     writeInt(chunk, 4, read)
                     System.arraycopy(buffer, 0, chunk, 8, read)
                     stream.write(chunk)
+
+                    pushedBytes += read
+                    if (totalBytes > 0) {
+                        val percent = ((pushedBytes * 100) / totalBytes).toInt()
+                        if (percent != lastReportedPercent) {
+                            lastReportedPercent = percent
+                            onByteProgress(pushedBytes, totalBytes)
+                        }
+                    }
                 }
             }
 
@@ -176,7 +229,6 @@ class R1Installer(
             writeInt(done, 4, (System.currentTimeMillis() / 1000).toInt())
             stream.write(done)
             readSyncResponse(stream)
-            stream.close()
         } finally {
             try {
                 stream.close()
