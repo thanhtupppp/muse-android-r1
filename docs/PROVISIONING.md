@@ -1,101 +1,58 @@
-# Wi‑Fi Provisioning
+# Wi-Fi Provisioning
 
-## Mục tiêu
+## Luồng thực tế trong source hiện tại
 
-Cho phép **Muse Mobile App** cấu hình Wi‑Fi nhà cho Phicomm R1 mà không cần ADB.
-
-## Luồng chuẩn
+Mobile cài Agent qua ADB over Wi-Fi, sau đó gửi cấu hình mạng nhà qua Bluetooth SPP. UDP discovery xác nhận loa xuất hiện lại trên mạng nhà.
 
 ```text
-Điện thoại
-   │
-   │ kết nối hotspot Phicomm_R1_xxx
-   ▼
-R1 Local HTTP Server :8080
-   │
-   │ POST /provision-wifi
-   ▼
-Muse R1 Agent
-   │
-   │ WifiManager.addNetwork + enableNetwork + reconnect
-   ▼
-Wi‑Fi nhà
+R1 phát hotspot Phicomm_R1_xxx
+        ↓
+Điện thoại kết nối hotspot của R1
+        ↓
+Muse Mobile tải sẵn Agent APK khi còn Internet
+        ↓
+ADB TCP 5555: push APK và chạy pm install
+        ↓
+AgentService khởi động trên R1
+        ↓
+Bluetooth SPP: gửi SSID/password WPA2
+        ↓
+R1 dùng WifiManager (Android 5.1.1 / API 22)
+        ↓
+R1 kết nối Wi-Fi nhà
+        ↓
+UDP discovery :47808 xác nhận R1 xuất hiện lại
 ```
 
-## Endpoint
+## Kênh kết nối
 
-### GET /health
+- **ADB TCP 5555:** cài Agent APK. Mobile kiểm tra shell, file APK, kết quả cài đặt và trạng thái AgentService.
+- **Bluetooth SPP:** kênh provisioning chính. UUID: `00001101-0000-1000-8000-00805F9B34FB`.
+- **UDP 47808:** discovery sau khi loa chuyển sang Wi-Fi nhà.
+- **HTTP :8080:** Agent cung cấp GET `/health`, GET `/status` và POST `/provision-wifi`. Mobile hiện không dùng POST làm luồng provisioning chính. Endpoint POST chưa có xác thực riêng; không expose ra mạng không tin cậy.
 
-Kiểm tra agent đang chạy.
+## Android 5.1.1
 
-```json
-{
-  "ok": true,
-  "service": "muse-r1-agent",
-  "version": "0.4.0-local-provisioning",
-  "provisioning_mode": true
-}
-```
+R1 dùng API 22, nên Agent sử dụng `WifiConfiguration` và `WifiManager`. Khi SSID đã tồn tại, phải gán `configuration.networkId` trước khi gọi `updateNetwork(configuration)`, sau đó dùng ID trả về để enable network.
 
-### GET /status
+## Giao thức Bluetooth
 
-```json
-{
-  "ok": true,
-  "device_id": "R1-001",
-  "agent_version": "0.4.0-local-provisioning",
-  "android_version": "5.1.1",
-  "network": "SSID: HomeWiFi\nIP: 192.168.1.25",
-  "muse_paired": false
-}
-```
+Mobile gửi các dòng `MUSE_WIFI_CONFIG`, `ssid=...`, `password=...`, `security=WPA2`, kết thúc bằng `END`. Agent trả một dòng `OK` hoặc `ERROR: ...`. Mobile chỉ báo thành công khi nhận chính xác `OK`; EOF hoặc phản hồi rỗng là lỗi.
 
-### POST /provision-wifi
+## Bảo mật và vận hành
 
-```json
-{
-  "ssid": "HomeWiFi",
-  "password": "home_wifi_password",
-  "security": "WPA2"
-}
-```
-
-Phản hồi thành công:
-
-```json
-{
-  "ok": true,
-  "message": "Connected command sent for HomeWiFi",
-  "device_id": "R1-001"
-}
-```
-
-## Android 5.1
-
-R1 dùng Android 5.1.1, nên `Muse R1 Agent` dùng:
-
-```kotlin
-wifiManager.addNetwork(configuration)
-wifiManager.enableNetwork(networkId, true)
-wifiManager.reconnect()
-```
-
-Không dùng `WifiNetworkSuggestion` làm luồng chính vì API này chỉ có từ Android 10.
-
-## Bảo mật
-
-- Server chỉ phục vụ provisioning khi R1 đang phát hotspot.
-- Không log SSID, mật khẩu, Muse token.
-- Không lưu mật khẩu Wi‑Fi trong Muse Mobile App.
-- Chỉ hỗ trợ WPA2 ở giai đoạn đầu.
-- Sau này thêm provisioning token/QR để ngăn thiết bị lạ gửi cấu hình.
+- Không ghi SSID, mật khẩu Wi-Fi hoặc Muse token vào log.
+- Chỉ hỗ trợ WPA2 ở phiên bản hiện tại.
+- ADB chỉ dùng trong bước cài Agent; luồng gửi mật khẩu Wi-Fi thông thường dùng Bluetooth SPP.
+- HTTP `POST /provision-wifi` chưa có xác thực; cần giới hạn vòng đời server và bổ sung auth trước khi dùng làm luồng chính.
 
 ## Xử lý sự cố
 
 | Hiện tượng | Kiểm tra |
 |---|---|
-| Mobile không thấy R1 | Điện thoại có đang nối `Phicomm_R1_xxx`? |
-| `/health` không phản hồi | AgentService có chạy? Cổng 8080 có bị chiếm? |
-| R1 không vào Wi‑Fi nhà | Router có phát 2.4 GHz? Mật khẩu WPA2 có đúng? |
-| R1 mất kết nối sau reboot | Kiểm tra `dumpsys wifi` và cấu hình đã lưu |
-| Cần khôi phục | Dùng ADB broadcast `PROVISION_WIFI` |
+| Mobile không kết nối ADB | Điện thoại đang ở hotspot R1; ADB TCP 5555 đang bật và chấp nhận khóa ADB của app |
+| ADB push thành công nhưng install lỗi | Kiểm tra output shell, dung lượng `/data` và kết quả `pm install` |
+| Không tìm thấy Muse R1 Bluetooth | Bật Bluetooth, ghép đôi loa và kiểm tra tên thiết bị bắt đầu bằng `Muse R1` |
+| R1 từ chối Wi-Fi | Kiểm tra SSID, mật khẩu WPA2 và khả năng tương thích 2.4 GHz |
+| Mobile không thấy loa sau provision | Kiểm tra hai thiết bị cùng mạng và UDP broadcast :47808 |
+| Cần khôi phục | Dùng ADB recovery khi điện thoại kết nối lại được với hotspot R1 |
