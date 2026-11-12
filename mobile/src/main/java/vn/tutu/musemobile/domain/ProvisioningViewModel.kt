@@ -124,17 +124,29 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         diagnosticLogs = emptyList()
         viewModelScope.launch {
             state = ProvisioningState.CheckingR1
-            status = "Đang chẩn đoán R1 qua Wi-Fi và ADB..."
+            status = "Đang tìm R1 trên Wi-Fi hiện tại bằng UDP Discovery..."
             try {
-                val report = installer.diagnoseAgent(speakerIp).getOrElse {
+                val discoveryLog = mutableListOf<String>()
+                val discovered = discoveryClient.discover(timeoutMs = 4000)
+                if (discovered != null) {
+                    speakerIp = discovered.ipAddress
+                    discoveryLog += "UDP Discovery: tìm thấy R1 tại ${discovered.ipAddress}"
+                    discoveryLog += "SSID trên R1: ${discovered.ssid}"
+                } else {
+                    discoveryLog += "UDP Discovery: không nhận được phản hồi trong 4 giây."
+                    discoveryLog += "Thử tiếp địa chỉ gần nhất: $speakerIp"
+                }
+
+                val targetIp = speakerIp
+                val report = installer.diagnoseAgent(targetIp).getOrElse {
                     "Không lấy được chẩn đoán ADB: ${it.javaClass.simpleName}: ${it.message}"
                 }
-                diagnosticLogs = report.lineSequence().toList()
-                val health = apiClient.health(speakerIp)
+                diagnosticLogs = discoveryLog + report.lineSequence().toList()
+                val health = apiClient.health(targetIp)
                 status = health.fold(
-                    onSuccess = { "Đã kết nối Muse R1 Agent tại $speakerIp:8080." },
+                    onSuccess = { "Đã kết nối Muse R1 Agent tại $targetIp:8080." },
                     onFailure = { error ->
-                        "Health check thất bại: ${error.javaClass.simpleName}: ${error.message ?: "không có chi tiết"}. Xem nhật ký chẩn đoán."
+                        "Health check thất bại tại $targetIp:8080: ${error.javaClass.simpleName}: ${error.message ?: "không có chi tiết"}. Xem nhật ký chẩn đoán."
                     }
                 )
             } finally {
