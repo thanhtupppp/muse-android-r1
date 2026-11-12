@@ -102,7 +102,7 @@ class BluetoothProvisionServer(
                 }
                 Log.i(TAG, "Bluetooth scan mode sau yêu cầu: ${adapter.scanMode}")
 
-                serverSocket = adapter.listenUsingRfcommWithServiceRecord(
+                serverSocket = adapter.listenUsingInsecureRfcommWithServiceRecord(
                     SERVICE_NAME,
                     MUSE_R1_SPP_UUID
                 )
