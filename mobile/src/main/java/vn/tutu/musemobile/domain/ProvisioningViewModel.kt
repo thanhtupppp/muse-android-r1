@@ -1,5 +1,6 @@
 package vn.tutu.musemobile.domain
 
+import android.annotation.SuppressLint
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -8,6 +9,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import vn.tutu.musemobile.data.BluetoothProvisioner
 import vn.tutu.musemobile.data.R1ApiClient
 import vn.tutu.musemobile.data.R1DiscoveryClient
 import vn.tutu.musemobile.data.R1Installer
@@ -19,6 +21,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     private val discoveryClient = R1DiscoveryClient()
     private val wifiScanner = WifiScanner(application)
     private val installer = R1Installer(application)
+    private val bluetoothProvisioner = BluetoothProvisioner(application)
 
     var state by mutableStateOf<ProvisioningState>(ProvisioningState.Idle)
         private set
@@ -79,6 +82,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    @SuppressLint("MissingPermission")
     fun startProvisioning() {
         val network = selectedNetwork
 
@@ -94,16 +98,32 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
 
         viewModelScope.launch {
             state = ProvisioningState.Provisioning
-            status = "Đang gửi cấu hình Wi‑Fi tới R1..."
+            status = "Đang tìm Muse R1 qua Bluetooth..."
 
-            apiClient.provisionWifi(
-                speakerIp = speakerIp,
-                ssid = network.ssid,
-                password = password
-            ).fold(
-                onSuccess = { waitForR1OnHomeNetwork() },
-                onFailure = {
-                    state = ProvisioningState.Failure(it.message ?: "Không gửi được cấu hình")
+            bluetoothProvisioner.findR1Device().fold(
+                onSuccess = { device ->
+                    val deviceName = device.name ?: "Muse R1"
+                    status = "Đã tìm thấy $deviceName. Đang gửi Wi‑Fi..."
+                    bluetoothProvisioner.provisionWifi(
+                        device = device,
+                        ssid = network.ssid,
+                        password = password
+                    ).fold(
+                        onSuccess = {
+                            status = "Đã gửi Wi‑Fi tới R1. Đang chờ R1 kết nối..."
+                            waitForR1OnHomeNetwork()
+                        },
+                        onFailure = { error ->
+                            state = ProvisioningState.Failure(
+                                error.message ?: "Không gửi được Wi‑Fi qua Bluetooth"
+                            )
+                        }
+                    )
+                },
+                onFailure = { error ->
+                    state = ProvisioningState.Failure(
+                        error.message ?: "Không tìm thấy Muse R1 qua Bluetooth"
+                    )
                 }
             )
         }

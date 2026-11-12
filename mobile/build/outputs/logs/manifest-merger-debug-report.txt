@@ -1,9 +1,9 @@
 -- Merging decision tree log ---
 manifest
-ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:2:1-26:12
-INJECTED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:2:1-26:12
-INJECTED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:2:1-26:12
-INJECTED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:2:1-26:12
+ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:2:1-30:12
+INJECTED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:2:1-30:12
+INJECTED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:2:1-30:12
+INJECTED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:2:1-30:12
 MERGED from [androidx.navigation:navigation-common:2.7.7] D:\.gradle\caches\transforms-4\a1877f764bd08111b3918acefb6900de\transformed\navigation-common-2.7.7\AndroidManifest.xml:17:1-22:12
 MERGED from [androidx.navigation:navigation-runtime:2.7.7] D:\.gradle\caches\transforms-4\8c7cd37326b69251ce63aa9bbdfd6a33\transformed\navigation-runtime-2.7.7\AndroidManifest.xml:17:1-22:12
 MERGED from [androidx.navigation:navigation-common-ktx:2.7.7] D:\.gradle\caches\transforms-4\92616c14f0dbd7663e320d4857105471\transformed\navigation-common-ktx-2.7.7\AndroidManifest.xml:2:1-7:12
@@ -81,9 +81,25 @@ uses-permission#android.permission.ACCESS_COARSE_LOCATION
 ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:9:5-81
 	android:name
 		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:9:22-78
+uses-permission#android.permission.BLUETOOTH
+ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:10:5-68
+	android:name
+		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:10:22-65
+uses-permission#android.permission.BLUETOOTH_ADMIN
+ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:11:5-74
+	android:name
+		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:11:22-71
+uses-permission#android.permission.BLUETOOTH_CONNECT
+ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:12:5-76
+	android:name
+		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:12:22-73
+uses-permission#android.permission.BLUETOOTH_SCAN
+ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:13:5-73
+	android:name
+		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:13:22-70
 application
-ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:11:5-25:19
-INJECTED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:11:5-25:19
+ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:15:5-29:19
+INJECTED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:15:5-29:19
 MERGED from [androidx.emoji2:emoji2:1.3.0] D:\.gradle\caches\transforms-4\0ac9cdfb307af8fbe8c06cb1e42a9a91\transformed\emoji2-1.3.0\AndroidManifest.xml:23:5-33:19
 MERGED from [androidx.emoji2:emoji2:1.3.0] D:\.gradle\caches\transforms-4\0ac9cdfb307af8fbe8c06cb1e42a9a91\transformed\emoji2-1.3.0\AndroidManifest.xml:23:5-33:19
 MERGED from [androidx.lifecycle:lifecycle-process:2.8.4] D:\.gradle\caches\transforms-4\1f3c245237bee18e87a01cce1a1d80e3\transformed\lifecycle-process-2.8.4\AndroidManifest.xml:23:5-33:19
@@ -101,29 +117,29 @@ MERGED from [androidx.startup:startup-runtime:1.1.1] D:\.gradle\caches\transform
 	android:appComponentFactory
 		ADDED from [androidx.core:core:1.13.1] D:\.gradle\caches\transforms-4\0e12637407c5f4960f45542b38d7c0b2\transformed\core-1.13.1\AndroidManifest.xml:28:18-86
 	android:supportsRtl
-		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:14:9-35
+		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:18:9-35
 	android:label
-		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:13:9-41
+		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:17:9-41
 	android:allowBackup
-		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:12:9-36
+		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:16:9-36
 	android:theme
-		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:15:9-48
+		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:19:9-48
 activity#vn.tutu.musemobile.MainActivity
-ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:17:9-24:20
+ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:21:9-28:20
 	android:exported
-		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:19:13-36
+		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:23:13-36
 	android:name
-		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:18:13-41
+		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:22:13-41
 intent-filter#action:name:android.intent.action.MAIN+category:name:android.intent.category.LAUNCHER
-ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:20:13-23:29
+ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:24:13-27:29
 action#android.intent.action.MAIN
-ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:21:17-69
+ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:25:17-69
 	android:name
-		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:21:25-66
+		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:25:25-66
 category#android.intent.category.LAUNCHER
-ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:22:17-77
+ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:26:17-77
 	android:name
-		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:22:27-74
+		ADDED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml:26:27-74
 uses-sdk
 INJECTED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml reason: use-sdk injection requested
 INJECTED from D:\muse-android-r1\mobile\src\main\AndroidManifest.xml
