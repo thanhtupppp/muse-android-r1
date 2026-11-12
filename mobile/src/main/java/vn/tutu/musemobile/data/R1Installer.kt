@@ -90,47 +90,49 @@ class R1Installer(private val context: Context) {
                     val fraction = pushed.toFloat() / total
                     onProgress("3/5: Truyền APK ${(fraction * 100).toInt()}%", 0.20f + fraction * 0.55f)
                 }
-            } finally { closeQuietly(socket, connection) }
-            onProgress("Đã nhận Sync OKAY. Mở kết nối mới để kiểm tra shell...", 0.76f)
-            delay(800)
+                onProgress("Đã nhận Sync OKAY. Giữ kết nối ADB hiện tại để chạy shell...", 0.76f)
 
-            fun execute(command: String): String {
-                val errors = mutableListOf<String>()
-                for (service in listOf("shell:", "exec:")) {
-                    val (s, c) = openConnection(host, 5555)
-                    try {
-                        val stream = try { c.open(service + command) } catch (e: IOException) {
+                // Reuse the authenticated ADB transport for every shell command.
+                // Some Android 5.1.1 adbd builds reject rapid reconnects after a sync push.
+                fun execute(command: String): String {
+                    val errors = mutableListOf<String>()
+                    for (service in listOf("shell:", "exec:")) {
+                        val stream = try {
+                            connection.open(service + command)
+                        } catch (e: IOException) {
                             errors += "$service ${e.message}"
                             continue
                         }
                         return readShell(stream)
-                    } finally { closeQuietly(s, c) }
+                    }
+                    throw IOException("R1 từ chối mở shell trên kết nối ADB hiện tại: ${errors.joinToString("; ")}")
                 }
-                throw IOException("R1 từ chối mở shell trên kết nối ADB mới: ${errors.joinToString("; ")}")
+
+                val probe = execute("echo MUSE_SHELL_OK; if [ -s $path ]; then echo MUSE_APK_PRESENT; ls -l $path; fi")
+                onProgress("Kiểm tra shell/file: ${probe.take(600)}", 0.78f)
+                if (!probe.lineSequence().any { it.trim() == "MUSE_SHELL_OK" })
+                    throw IOException("Chưa xác nhận được ADB shell: ${probe.take(600)}")
+                if (!probe.lineSequence().any { it.trim() == "MUSE_APK_PRESENT" })
+                    throw IOException("Không tìm thấy APK đã truyền trên R1")
+
+                onProgress("4/5: Đang chạy pm install -r...", 0.80f)
+                val installed = execute("pm install -r $path")
+                onProgress("pm install: ${installed.take(1000)}", 0.90f)
+                if (!installed.lineSequence().any { it.trim() == "Success" })
+                    throw IOException("pm install không trả Success: ${installed.take(1000)}")
+
+                onProgress("5/5: Đang khởi động Agent...", 0.95f)
+                val launched = execute("am startservice -n vn.tutu.muser1/.AgentService")
+                onProgress("Kết quả khởi động: ${launched.take(600)}", 0.97f)
+                if (listOf("Error", "Exception", "Permission Denial", "not found").any { launched.contains(it, true) })
+                    throw IOException("APK đã cài nhưng không khởi động được Agent: ${launched.take(600)}")
+                val services = execute("dumpsys activity services vn.tutu.muser1")
+                if (!services.contains(".AgentService"))
+                    throw IOException("APK đã cài nhưng chưa xác nhận AgentService đang chạy")
+                onProgress("Hoàn tất: đã cài APK và xác nhận AgentService đang chạy.", 1f)
+            } finally {
+                closeQuietly(socket, connection)
             }
-
-            val probe = execute("echo MUSE_SHELL_OK; if [ -s $path ]; then echo MUSE_APK_PRESENT; ls -l $path; fi")
-            onProgress("Kiểm tra shell/file: ${probe.take(600)}", 0.78f)
-            if (!probe.lineSequence().any { it.trim() == "MUSE_SHELL_OK" })
-                throw IOException("Chưa xác nhận được ADB shell: ${probe.take(600)}")
-            if (!probe.lineSequence().any { it.trim() == "MUSE_APK_PRESENT" })
-                throw IOException("Không tìm thấy APK đã truyền trên R1")
-
-            onProgress("4/5: Đang chạy pm install -r...", 0.80f)
-            val installed = execute("pm install -r $path")
-            onProgress("pm install: ${installed.take(1000)}", 0.90f)
-            if (!installed.lineSequence().any { it.trim() == "Success" })
-                throw IOException("pm install không trả Success: ${installed.take(1000)}")
-
-            onProgress("5/5: Đang khởi động Agent...", 0.95f)
-            val launched = execute("am startservice -n vn.tutu.muser1/.AgentService")
-            onProgress("Kết quả khởi động: ${launched.take(600)}", 0.97f)
-            if (listOf("Error", "Exception", "Permission Denial", "not found").any { launched.contains(it, true) })
-                throw IOException("APK đã cài nhưng không khởi động được Agent: ${launched.take(600)}")
-            val services = execute("dumpsys activity services vn.tutu.muser1")
-            if (!services.contains(".AgentService"))
-                throw IOException("APK đã cài nhưng chưa xác nhận AgentService đang chạy")
-            onProgress("Hoàn tất: đã cài APK và xác nhận AgentService đang chạy.", 1f)
             Result.success(Unit)
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) { Result.failure(e) }
