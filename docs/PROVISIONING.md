@@ -1,8 +1,8 @@
-# Wi‑Fi Provisioning
+# Wi-Fi Provisioning
 
 ## Mục tiêu
 
-Cho phép **Muse Mobile App** cấu hình Wi‑Fi nhà cho Phicomm R1 mà không cần ADB.
+Cho phép **Muse Mobile App** cấu hình Wi-Fi nhà cho Phicomm R1 mà không cần ADB. ADB vẫn được giữ làm kênh khôi phục/kỹ thuật.
 
 ## Luồng chuẩn
 
@@ -19,7 +19,7 @@ Muse R1 Agent
    │
    │ WifiManager.addNetwork + enableNetwork + reconnect
    ▼
-Wi‑Fi nhà
+Wi-Fi nhà
 ```
 
 ## Endpoint
@@ -28,47 +28,35 @@ Wi‑Fi nhà
 
 Kiểm tra agent đang chạy.
 
-```json
-{
-  "ok": true,
-  "service": "muse-r1-agent",
-  "version": "0.4.0-local-provisioning",
-  "provisioning_mode": true
-}
-```
-
 ### GET /status
 
-```json
-{
-  "ok": true,
-  "device_id": "R1-001",
-  "agent_version": "0.4.0-local-provisioning",
-  "android_version": "5.1.1",
-  "network": "SSID: HomeWiFi\nIP: 192.168.1.25",
-  "muse_paired": false
-}
-```
+Trả về trạng thái thiết bị và kết nối mạng. Không gửi mật khẩu Wi-Fi hoặc Muse token trong response.
 
 ### POST /provision-wifi
 
-```json
-{
-  "ssid": "HomeWiFi",
-  "password": "home_wifi_password",
-  "security": "WPA2"
-}
+Nhận JSON gồm `ssid`, `password` và `security` (hiện chỉ hỗ trợ WPA2).
+
+**Cảnh báo bảo mật:** Endpoint HTTP hiện chưa có xác thực và truyền mật khẩu qua HTTP không mã hóa. Chỉ sử dụng trên mạng hotspot cô lập, tin cậy; không triển khai như một endpoint mạng LAN công khai. Việc bổ sung provisioning token/QR hoặc HTTPS có xác thực là điều kiện bắt buộc trước khi coi luồng này an toàn để phát hành rộng rãi. Không được xem việc bảo vệ ADB receiver là đã khắc phục rủi ro HTTP này.
+
+## ADB recovery (vẫn được hỗ trợ)
+
+Receiver vẫn exported để Android shell có thể gọi qua ADB, nhưng manifest yêu cầu `android.permission.DUMP`. Quyền này được cấp cho shell UID dùng bởi `adb shell`, không phải quyền thông thường của ứng dụng bên thứ ba.
+
+Cấu hình Wi-Fi:
+
+```bash
+adb shell am broadcast -a vn.tutu.muser1.PROVISION_WIFI \\
+  --es ssid "TEN_WIFI_NHA" --es password "MAT_KHAU"
 ```
 
-Phản hồi thành công:
+Cấu hình Muse token:
 
-```json
-{
-  "ok": true,
-  "message": "Connected command sent for HomeWiFi",
-  "device_id": "R1-001"
-}
+```bash
+adb shell am broadcast -a vn.tutu.muser1.CONFIGURE_MUSE \\
+  --es muse_token "mgst_..."
 ```
+
+Không đưa mật khẩu/token thật vào issue, log, shell history dùng chung hoặc ảnh chụp màn hình. Lệnh broadcast có thể để lại thông tin nhạy cảm trong lịch sử terminal.
 
 ## Android 5.1
 
@@ -82,20 +70,12 @@ wifiManager.reconnect()
 
 Không dùng `WifiNetworkSuggestion` làm luồng chính vì API này chỉ có từ Android 10.
 
-## Bảo mật
-
-- Server chỉ phục vụ provisioning khi R1 đang phát hotspot.
-- Không log SSID, mật khẩu, Muse token.
-- Không lưu mật khẩu Wi‑Fi trong Muse Mobile App.
-- Chỉ hỗ trợ WPA2 ở giai đoạn đầu.
-- Sau này thêm provisioning token/QR để ngăn thiết bị lạ gửi cấu hình.
-
 ## Xử lý sự cố
 
 | Hiện tượng | Kiểm tra |
 |---|---|
 | Mobile không thấy R1 | Điện thoại có đang nối `Phicomm_R1_xxx`? |
 | `/health` không phản hồi | AgentService có chạy? Cổng 8080 có bị chiếm? |
-| R1 không vào Wi‑Fi nhà | Router có phát 2.4 GHz? Mật khẩu WPA2 có đúng? |
+| ADB báo Permission Denial | Xác nhận lệnh chạy qua `adb shell` (shell UID), không phải từ một ứng dụng khác |
+| R1 không vào Wi-Fi nhà | Router có phát 2.4 GHz? Mật khẩu WPA2 có đúng? |
 | R1 mất kết nối sau reboot | Kiểm tra `dumpsys wifi` và cấu hình đã lưu |
-| Cần khôi phục | Dùng ADB broadcast `PROVISION_WIFI` |
