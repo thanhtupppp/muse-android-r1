@@ -108,12 +108,12 @@ class R1Installer(private val context: Context) {
                     if [ "${'$'}INSTALL_RC" -ne 0 ]; then exit 11; fi
                     START_OUTPUT=$(am startservice -n vn.tutu.muser1/.AgentService 2>&1)
                     START_RC=$?
-                    echo "$START_OUTPUT"
-                    echo MUSE_START_RC=$START_RC
+                    echo "${'START_OUTPUT"}START_OUTPUT"
+                    echo MUSE_START_RC=${'START_RC}START_RC
                     if [ "${'$'}START_RC" -ne 0 ] || echo "$START_OUTPUT" | grep -q 'Error:'; then exit 12; fi
                     sleep 2
                     SERVICE_STATE=$(dumpsys activity services vn.tutu.muser1/.AgentService 2>&1)
-                    echo "$SERVICE_STATE"
+                    echo "${'SERVICE_STATE"}SERVICE_STATE"
                     if echo "$SERVICE_STATE" | grep -Fq 'vn.tutu.muser1/.AgentService'; then
                         echo MUSE_AGENT_RUNNING
                     else
