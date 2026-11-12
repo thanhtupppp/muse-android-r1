@@ -13,18 +13,22 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import vn.tutu.musemobile.domain.ProvisioningViewModel
 import vn.tutu.musemobile.ui.AddR1Screen
+import vn.tutu.musemobile.ui.BluetoothPairingScreen
 import vn.tutu.musemobile.ui.ProvisioningScreen
 import vn.tutu.musemobile.ui.WifiPickerScreen
-import vn.tutu.musemobile.domain.ProvisioningViewModel
 
 class MainActivity : ComponentActivity() {
 
     private val locationPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+        registerForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         setContent {
             MaterialTheme {
                 Surface {
@@ -39,15 +43,33 @@ class MainActivity : ComponentActivity() {
                             AddR1Screen(
                                 viewModel = viewModel,
                                 onRequestWifiPermission = ::requestWifiPermissions,
-                                onR1Found = { navController.navigate("wifi_picker") }
+                                onR1Found = {
+                                    navController.navigate("bluetooth_pairing")
+                                }
+                            )
+                        }
+
+                        composable("bluetooth_pairing") {
+                            BluetoothPairingScreen(
+                                viewModel = viewModel,
+                                onDeviceSelected = {
+                                    navController.navigate("wifi_picker")
+                                },
+                                onBack = {
+                                    navController.popBackStack()
+                                }
                             )
                         }
 
                         composable("wifi_picker") {
                             WifiPickerScreen(
                                 viewModel = viewModel,
-                                onBack = { navController.popBackStack() },
-                                onProvisioningStarted = { navController.navigate("provisioning") }
+                                onBack = {
+                                    navController.popBackStack()
+                                },
+                                onProvisioningStarted = {
+                                    navController.navigate("provisioning")
+                                }
                             )
                         }
 
@@ -67,11 +89,16 @@ class MainActivity : ComponentActivity() {
         )
 
         val missing = permissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(
+                this,
+                it
+            ) != PackageManager.PERMISSION_GRANTED
         }
 
         if (missing.isNotEmpty()) {
-            locationPermissionLauncher.launch(missing.toTypedArray())
+            locationPermissionLauncher.launch(
+                missing.toTypedArray()
+            )
         }
     }
 }
