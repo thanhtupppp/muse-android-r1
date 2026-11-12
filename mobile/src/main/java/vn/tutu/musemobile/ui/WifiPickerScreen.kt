@@ -2,7 +2,6 @@ package vn.tutu.musemobile.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -22,7 +21,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import vn.tutu.musemobile.domain.ProvisioningViewModel
@@ -31,7 +29,7 @@ import vn.tutu.musemobile.domain.ProvisioningViewModel
 fun WifiPickerScreen(
     viewModel: ProvisioningViewModel,
     onBack: () -> Unit,
-    onWifiSelected: () -> Unit
+    onProvisioningStarted: () -> Unit
 ) {
     var password by remember { mutableStateOf("") }
     val networks = viewModel.wifiNetworks
@@ -63,10 +61,7 @@ fun WifiPickerScreen(
                 items(networks) { network ->
                     Card(
                         modifier = Modifier.fillMaxWidth(),
-                        onClick = {
-                            viewModel.selectWifiNetwork(network)
-                            onWifiSelected()
-                        }
+                        onClick = { viewModel.selectWifiNetwork(network) }
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Text(text = network.ssid)
@@ -94,7 +89,8 @@ fun WifiPickerScreen(
             Button(
                 onClick = {
                     viewModel.setPassword(password)
-                    onWifiSelected()
+                    viewModel.startProvisioning()
+                    onProvisioningStarted()
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {

@@ -9,11 +9,13 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import vn.tutu.musemobile.data.R1ApiClient
+import vn.tutu.musemobile.data.R1DiscoveryClient
 import vn.tutu.musemobile.data.WifiScanner
 
 class ProvisioningViewModel(application: Application) : AndroidViewModel(application) {
 
     private val apiClient = R1ApiClient()
+    private val discoveryClient = R1DiscoveryClient()
     private val wifiScanner = WifiScanner(application)
 
     var state by mutableStateOf<ProvisioningState>(ProvisioningState.Idle)
@@ -40,7 +42,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     fun selectWifiNetwork(network: WifiNetwork) {
         selectedNetwork = network
         state = ProvisioningState.SelectingWifi
-        status = "Đã chọn ${network.ssid}. Nhập mật khẩu để tiếp tục."
+        status = "Đã chọn " + network.ssid + ". Nhập mật khẩu để tiếp tục."
     }
 
     fun refreshWifiNetworks() {
@@ -50,7 +52,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
             status = if (wifiNetworks.isEmpty()) {
                 "Chưa có kết quả quét. Hãy cấp quyền vị trí và thử lại."
             } else {
-                "Đã tìm thấy ${wifiNetworks.size} mạng Wi‑Fi."
+                "Đã tìm thấy " + wifiNetworks.size + " mạng Wi‑Fi."
             }
         }
     }
@@ -58,14 +60,14 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     fun checkR1() {
         viewModelScope.launch {
             state = ProvisioningState.CheckingR1
-            status = "Đang kiểm tra R1 tại $speakerIp..."
+            status = "Đang kiểm tra R1 tại " + speakerIp + "..."
 
             apiClient.health(speakerIp).fold(
                 onSuccess = { reachable ->
-                    if (reachable) {
-                        status = "Đã tìm thấy Muse R1 Agent."
+                    status = if (reachable) {
+                        "Đã tìm thấy Muse R1 Agent."
                     } else {
-                        status = "Không tìm thấy Muse R1 Agent tại $speakerIp:8080."
+                        "Không tìm thấy Muse R1 Agent tại " + speakerIp + ":8080."
                     }
                 },
                 onFailure = {
@@ -92,16 +94,12 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
             state = ProvisioningState.Provisioning
             status = "Đang gửi cấu hình Wi‑Fi tới R1..."
 
-            val result = apiClient.provisionWifi(
+            apiClient.provisionWifi(
                 speakerIp = speakerIp,
                 ssid = network.ssid,
                 password = password
-            )
-
-            result.fold(
-                onSuccess = {
-                    waitForR1()
-                },
+            ).fold(
+                onSuccess = { waitForR1OnHomeNetwork() },
                 onFailure = {
                     state = ProvisioningState.Failure(it.message ?: "Không gửi được cấu hình")
                 }
@@ -109,33 +107,25 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
-    private suspend fun waitForR1() {
+    private suspend fun waitForR1OnHomeNetwork() {
         state = ProvisioningState.WaitingForR1
-        status = "Đang xác nhận R1 đã vào Wi‑Fi nhà..."
+        status = "R1 đang kết nối Wi‑Fi nhà. Không tắt nguồn loa."
 
-        repeat(12) {
-            delay(5_000)
+        repeat(24) {
+            delay(5000)
 
-            val statusResult = apiClient.status(speakerIp)
+            val discovered = discoveryClient.discover()
 
-            statusResult.fold(
-                onSuccess = { response ->
-                    val networkText = response.optString("network")
-
-                    if (networkText.contains("IP:")) {
-                        val ip = networkText.substringAfter("IP:").trim()
-                        state = ProvisioningState.Success(ip)
-                        status = "R1 đã kết nối Wi‑Fi nhà."
-                        return
-                    }
-                },
-                onFailure = {
-                    // R1 đã rời hotspot nên lỗi kết nối là bình thường.
-                }
-            )
+            if (discovered != null) {
+                state = ProvisioningState.Success(discovered.ipAddress)
+                status = "R1 đã kết nối Wi‑Fi nhà: " + discovered.ipAddress
+                return
+            }
         }
 
-        state = ProvisioningState.Failure("Không xác nhận được R1 sau khi đổi Wi‑Fi.")
+        state = ProvisioningState.Failure(
+            "Không tìm thấy R1 trên Wi‑Fi nhà sau 2 phút. Hãy kiểm tra router hoặc dùng ADB."
+        )
     }
 
     fun retry() {

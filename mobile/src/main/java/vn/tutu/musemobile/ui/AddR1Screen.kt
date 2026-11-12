@@ -27,7 +27,7 @@ import vn.tutu.musemobile.domain.ProvisioningViewModel
 fun AddR1Screen(
     viewModel: ProvisioningViewModel,
     onRequestWifiPermission: () -> Unit,
-    onWifiSelected: () -> Unit
+    onR1Found: () -> Unit
 ) {
     var speakerIp by remember { mutableStateOf("192.168.43.1") }
 
@@ -76,7 +76,7 @@ fun AddR1Screen(
                 Text("Cấp quyền quét Wi‑Fi")
             }
 
-            TextButton(onClick = onWifiSelected) {
+            TextButton(onClick = onR1Found) {
                 Text("Chọn Wi‑Fi nhà")
             }
 
