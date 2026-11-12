@@ -30,6 +30,22 @@ class BluetoothProvisioner(private val context: Context) {
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_ADMIN) == PackageManager.PERMISSION_GRANTED
     }
     @SuppressLint("MissingPermission")
+    fun startDiscovery(): Boolean {
+        val adapter = bluetoothAdapter ?: return false
+        if (!adapter.isEnabled) return false
+        if (adapter.isDiscovering) adapter.cancelDiscovery()
+        return adapter.startDiscovery()
+    }
+
+    @SuppressLint("MissingPermission")
+    fun cancelDiscovery() {
+        bluetoothAdapter?.cancelDiscovery()
+    }
+
+    fun isR1Device(device: BluetoothDevice): Boolean =
+        device.name?.startsWith(DEVICE_NAME_PREFIX, ignoreCase = true) == true
+
+    @SuppressLint("MissingPermission")
     fun getBondedR1Devices(): List<BluetoothDevice> {
         val adapter = bluetoothAdapter ?: return emptyList()
         if (!adapter.isEnabled) return emptyList()
