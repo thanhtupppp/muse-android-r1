@@ -24,6 +24,7 @@ class BluetoothProvisionServer(
         private const val SERVICE_NAME = "Muse R1 Provisioning"
         private const val BLUETOOTH_ENABLE_TIMEOUT_MS = 15_000L
         private const val BLUETOOTH_POLL_INTERVAL_MS = 500L
+        private const val DISCOVERABLE_DURATION_SECONDS = 3_600
     }
 
     @Suppress("DEPRECATION")
@@ -78,6 +79,27 @@ class BluetoothProvisionServer(
                     Log.e(TAG, "Bluetooth vẫn chưa bật sau thời gian chờ")
                     return@Thread
                 }
+
+                // Android 5.1.1/API 22: make the R1 visible to nearby phones
+                // as well as connectable before accepting the SPP connection.
+                Log.i(TAG, "Bluetooth scan mode trước khi discoverable: ${adapter.scanMode}")
+                if (adapter.scanMode != BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE) {
+                    val discoverable = adapter.setScanMode(
+                        BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE,
+                        DISCOVERABLE_DURATION_SECONDS
+                    )
+                    Log.i(TAG, "Yêu cầu bật Bluetooth discoverable: $discoverable")
+                }
+
+                val discoverableDeadline = System.currentTimeMillis() + 5_000L
+                while (
+                    isRunning &&
+                    adapter.scanMode != BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE &&
+                    System.currentTimeMillis() < discoverableDeadline
+                ) {
+                    Thread.sleep(BLUETOOTH_POLL_INTERVAL_MS)
+                }
+                Log.i(TAG, "Bluetooth scan mode sau yêu cầu: ${adapter.scanMode}")
 
                 serverSocket = adapter.listenUsingRfcommWithServiceRecord(
                     SERVICE_NAME,
