@@ -122,6 +122,8 @@ class R1Installer(
                 onProgress("Đã thiết lập kết nối ADB thành công!", 0.20f)
 
                 val remotePath = "/data/local/tmp/muse_r1_agent.apk"
+                runShell(connection, "rm -f $remotePath")
+
                 onProgress("3/5: Bắt đầu truyền APK ($apkSizeMb) lên $remotePath...", 0.20f)
 
                 pushApk(
@@ -191,11 +193,11 @@ class R1Installer(
     ) {
         val stream = connection.open("sync:")
         try {
-            val pathBytes = remotePath.toByteArray(Charsets.UTF_8)
-            val mode = "0644".toInt(16)
+            val pathAndMode = "$remotePath,33188"
+            val pathBytes = pathAndMode.toByteArray(Charsets.UTF_8)
             val sendHeader = ByteArray(8 + pathBytes.size)
             writeString(sendHeader, 0, "SEND")
-            writeInt(sendHeader, 4, (mode shl 16) or pathBytes.size)
+            writeInt(sendHeader, 4, pathBytes.size)
             System.arraycopy(pathBytes, 0, sendHeader, 8, pathBytes.size)
             stream.write(sendHeader)
 
@@ -203,8 +205,10 @@ class R1Installer(
             var pushedBytes = 0L
             var lastReportedPercent = -1
 
+            onByteProgress(0L, totalBytes)
+
             apkFile.inputStream().use { input ->
-                val buffer = ByteArray(8192)
+                val buffer = ByteArray(2048)
                 var read: Int
                 while (input.read(buffer).also { read = it } != -1) {
                     val chunk = ByteArray(8 + read)
@@ -228,6 +232,7 @@ class R1Installer(
             writeString(done, 0, "DONE")
             writeInt(done, 4, (System.currentTimeMillis() / 1000).toInt())
             stream.write(done)
+
             readSyncResponse(stream)
         } finally {
             try {
@@ -239,8 +244,20 @@ class R1Installer(
 
     private fun readSyncResponse(stream: AdbStream) {
         val response = stream.read()
-        if (!String(response, Charsets.US_ASCII).contains("OKAY")) {
-            throw IOException("ADB từ chối push APK")
+        if (response.size < 4) {
+            throw IOException("Phản hồi sync không hợp lệ (size = ${response.size})")
+        }
+        val id = String(response, 0, 4, Charsets.US_ASCII)
+        if (id == "FAIL") {
+            val msg = if (response.size > 8) {
+                String(response, 8, response.size - 8, Charsets.UTF_8)
+            } else {
+                "lỗi không xác định"
+            }
+            throw IOException("ADB sync từ chối file: $msg")
+        }
+        if (id != "OKAY") {
+            throw IOException("Phản hồi ADB sync không mong muốn: $id")
         }
     }
 
