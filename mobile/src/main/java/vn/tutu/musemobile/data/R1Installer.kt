@@ -236,11 +236,12 @@ class R1Installer(
     ) {
         val stream = connection.open("sync:")
         try {
-            val pathAndMode = "$remotePath,33188"
-            val pathBytes = pathAndMode.toByteArray(Charsets.UTF_8)
+            val pathBytes = remotePath.toByteArray(Charsets.UTF_8)
+            val mode = 33188 // 0100644 octal (S_IFREG | 0644)
+
             val sendHeader = ByteArray(8 + pathBytes.size)
             writeString(sendHeader, 0, "SEND")
-            writeInt(sendHeader, 4, pathBytes.size)
+            writeInt(sendHeader, 4, (mode shl 16) or pathBytes.size)
             System.arraycopy(pathBytes, 0, sendHeader, 8, pathBytes.size)
             stream.write(sendHeader)
 
@@ -317,24 +318,43 @@ class R1Installer(
         connection: AdbConnection,
         command: String
     ): String {
-        val stream = connection.open("shell:$command")
-        val output = StringBuilder()
-        try {
-            while (!stream.isClosed) {
-                try {
-                    val buffer = stream.read()
-                    output.append(String(buffer, Charsets.UTF_8))
-                } catch (_: Exception) {
-                    break
-                }
-            }
-        } finally {
+        // Thử theo thứ tự:
+        // 1. exec:<cmd> (chạy trực tiếp raw pipe, không cần PTY /dev/ptmx - tránh lỗi rejected trên Android cũ)
+        // 2. shell:<cmd> (chạy qua subprocess PTY)
+        // 3. shell: (mở shell tương tác và gửi command\nexit\n vào stdin)
+        val targets = listOf("exec:$command", "shell:$command", "shell:")
+        var lastException: Exception? = null
+
+        for (target in targets) {
             try {
-                stream.close()
-            } catch (_: Exception) {
+                val stream = connection.open(target)
+                val output = StringBuilder()
+                try {
+                    if (target == "shell:") {
+                        val inputCmd = "$command\nexit\n"
+                        stream.write(inputCmd.toByteArray(Charsets.UTF_8))
+                    }
+                    while (!stream.isClosed) {
+                        try {
+                            val buffer = stream.read()
+                            output.append(String(buffer, Charsets.UTF_8))
+                        } catch (_: Exception) {
+                            break
+                        }
+                    }
+                } finally {
+                    try {
+                        stream.close()
+                    } catch (_: Exception) {
+                    }
+                }
+                return output.toString()
+            } catch (e: Exception) {
+                lastException = e
+                Log.w("R1Installer", "Target '$target' bị từ chối, thử phương thức tiếp theo...", e)
             }
         }
-        return output.toString()
+        throw lastException ?: IOException("Lệnh không thể thực thi: $command")
     }
 
     private fun writeString(
