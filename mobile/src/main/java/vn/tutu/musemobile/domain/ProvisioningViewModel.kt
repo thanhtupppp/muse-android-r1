@@ -69,6 +69,17 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         installLogs = installLogs + "[$time] $msg"
     }
 
+    fun getInstallLogsText(): String {
+        val dateStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+        val sb = StringBuilder()
+        sb.append("=== MUSE R1 INSTALLATION LOG ($dateStr) ===\n")
+        sb.append("Địa chỉ loa: $speakerIp:5555\n")
+        sb.append("Trạng thái: $installStage\n")
+        sb.append("------------------------------------------\n")
+        installLogs.forEach { sb.append(it).append("\n") }
+        return sb.toString()
+    }
+
     @SuppressLint("MissingPermission")
     fun selectBluetoothDevice(device: BluetoothDevice) {
         bluetoothDevice = device
@@ -281,6 +292,9 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                         status = "Lỗi cài Agent qua ADB: $errMsg"
                         installStage = "Lỗi cài đặt!"
                         addInstallLog("❌ Thất bại: $errMsg")
+                        error.cause?.message?.let { causeMsg ->
+                            addInstallLog("Nguyên nhân: $causeMsg")
+                        }
                     }
                 )
             } finally {

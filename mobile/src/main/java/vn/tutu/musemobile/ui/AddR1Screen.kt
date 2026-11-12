@@ -1,7 +1,9 @@
 package vn.tutu.musemobile.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,6 +23,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -37,10 +40,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import vn.tutu.musemobile.domain.ProvisioningViewModel
 
 @Composable
@@ -52,6 +59,24 @@ fun AddR1Screen(
     var speakerIp by remember { mutableStateOf("192.168.43.1") }
     var apkUrl by remember {
         mutableStateOf("https://github.com/thanhtupppp/muse-android-r1/releases/download/v0.1.0/app-debug.apk")
+    }
+
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    var isCopied by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isCopied) {
+        if (isCopied) {
+            delay(2000)
+            isCopied = false
+        }
+    }
+
+    fun copyLogToClipboard() {
+        val logText = viewModel.getInstallLogsText()
+        clipboardManager.setText(AnnotatedString(logText))
+        Toast.makeText(context, "Đã sao chép toàn bộ nhật ký cài đặt!", Toast.LENGTH_SHORT).show()
+        isCopied = true
     }
 
     val scrollState = rememberScrollState()
@@ -177,20 +202,39 @@ fun AddR1Screen(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            if (viewModel.isInstalling) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    strokeWidth = 2.dp
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                if (viewModel.isInstalling) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                }
+                                Text(
+                                    text = if (viewModel.isInstalling) "Tiến trình cài đặt ADB" else "Nhật ký cài đặt ADB",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
                                 )
-                                Spacer(modifier = Modifier.width(8.dp))
                             }
-                            Text(
-                                text = if (viewModel.isInstalling) "Tiến trình cài đặt ADB" else "Nhật ký cài đặt ADB",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
+
+                            if (viewModel.installLogs.isNotEmpty()) {
+                                TextButton(
+                                    onClick = { copyLogToClipboard() },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = if (isCopied) "Đã chép ✔️" else "Sao chép log 📋",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
                         }
 
                         if (viewModel.installStage.isNotEmpty()) {
@@ -231,7 +275,7 @@ fun AddR1Screen(
                                 shape = RoundedCornerShape(8.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .heightIn(min = 60.dp, max = 180.dp)
+                                    .heightIn(min = 60.dp, max = 200.dp)
                             ) {
                                 val logListState = rememberLazyListState()
                                 LaunchedEffect(logs.size) {
@@ -259,6 +303,30 @@ fun AddR1Screen(
                                             lineHeight = 15.sp
                                         )
                                     }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${logs.size} dòng nhật ký",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+
+                                FilledTonalButton(
+                                    onClick = { copyLogToClipboard() },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = if (isCopied) "Đã sao chép ✔️" else "Sao chép toàn bộ log 📋",
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
                                 }
                             }
                         }
