@@ -10,11 +10,20 @@ object WifiProvisioner {
     private const val CONNECT_TIMEOUT_MS = 30_000L
     private const val CONNECT_POLL_INTERVAL_MS = 1_000L
 
+    @Volatile
+    var lastFailureReason: String = "Chưa có thông tin lỗi"
+        private set
+
+    private fun fail(reason: String): Boolean {
+        lastFailureReason = reason
+        Log.e(TAG, reason)
+        return false
+    }
+
     fun connect(context: Context, ssid: String, password: String): Boolean {
         val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         if (manager == null) {
-            Log.e(TAG, "Wi-Fi provisioning failed: WifiManager unavailable")
-            return false
+            return fail("Không lấy được WifiManager")
         }
         return connectAndWait(manager, ssid, password)
     }
@@ -24,22 +33,20 @@ object WifiProvisioner {
 
     @Suppress("DEPRECATION")
     fun connectAndWait(wifiManager: WifiManager, ssid: String, password: String): Boolean {
+        lastFailureReason = ""
         val cleanSsid = ssid.trim()
         Log.i(TAG, "Wi-Fi provisioning requested for SSID='$cleanSsid' (password omitted)")
         if (cleanSsid.isEmpty()) {
-            Log.e(TAG, "Wi-Fi provisioning rejected: SSID is empty")
-            return false
+            return fail("SSID bị trống")
         }
         if (password.length < 8) {
-            Log.e(TAG, "Wi-Fi provisioning rejected: WPA2 password is shorter than 8 characters")
-            return false
+            return fail("Mật khẩu WPA2 phải có ít nhất 8 ký tự")
         }
         return try {
             if (!wifiManager.isWifiEnabled) {
                 Log.i(TAG, "Wi-Fi is disabled; requesting enable")
                 if (!wifiManager.setWifiEnabled(true)) {
-                    Log.e(TAG, "Wi-Fi provisioning failed at setWifiEnabled")
-                    return false
+                    return fail("Không bật được Wi-Fi trên loa (setWifiEnabled=false)")
                 }
             }
 
@@ -52,14 +59,12 @@ object WifiProvisioner {
                 Log.w(TAG, "addNetwork returned -1; searching configured networks")
                 val existingId = findExistingNetworkId(wifiManager, cleanSsid)
                 if (existingId == -1) {
-                    Log.e(TAG, "Wi-Fi provisioning failed at addNetwork: no existing SSID match")
-                    return false
+                    return fail("Android từ chối addNetwork và không tìm thấy mạng đã lưu cùng SSID")
                 }
                 configuration.networkId = existingId
                 networkId = wifiManager.updateNetwork(configuration)
                 if (networkId == -1) {
-                    Log.e(TAG, "Wi-Fi provisioning failed at updateNetwork for networkId=$existingId")
-                    return false
+                    return fail("Android từ chối cập nhật mạng đã lưu (updateNetwork=-1)")
                 }
                 Log.i(TAG, "Updated existing Wi-Fi networkId=$networkId")
             } else {
@@ -67,8 +72,7 @@ object WifiProvisioner {
             }
 
             if (!wifiManager.enableNetwork(networkId, true)) {
-                Log.e(TAG, "Wi-Fi provisioning failed at enableNetwork networkId=$networkId")
-                return false
+                return fail("Android từ chối bật mạng Wi-Fi (enableNetwork=false)")
             }
             Log.i(TAG, "enableNetwork accepted for networkId=$networkId")
 
@@ -79,8 +83,8 @@ object WifiProvisioner {
 
             waitForConnection(wifiManager, cleanSsid)
         } catch (error: Exception) {
-            Log.e(TAG, "Wi-Fi provisioning threw exception: ${error.javaClass.simpleName}: ${error.message}", error)
-            false
+            Log.e(TAG, "Wi-Fi provisioning exception", error)
+            fail("Ngoại lệ ${error.javaClass.simpleName}: ${error.message ?: "không có chi tiết"}")
         }
     }
 
@@ -100,8 +104,7 @@ object WifiProvisioner {
             Thread.sleep(CONNECT_POLL_INTERVAL_MS)
         }
         val info = wifiManager.connectionInfo
-        Log.e(TAG, "Wi-Fi connection timed out: expected='$expected', actual='${info?.ssid}', supplicantState=${info?.supplicantState}, networkId=${info?.networkId}")
-        return false
+        return fail("Hết 30 giây chờ Wi-Fi. Mong đợi=$expected, hiện tại=${info?.ssid}, trạng thái=${info?.supplicantState}, networkId=${info?.networkId}")
     }
 
     @Suppress("DEPRECATION")
