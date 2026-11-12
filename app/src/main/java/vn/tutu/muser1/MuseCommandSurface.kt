@@ -38,7 +38,8 @@ class MuseCommandSurface(private val context: Context) {
             return errorResponse("Volume must be between 0 and 100")
         }
 
-        val audioManager = context.getSystemService(AudioManager::class.java)
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            ?: return errorResponse("AudioManager not available")
         val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         val targetVolume = (volume * maxVolume) / 100
 

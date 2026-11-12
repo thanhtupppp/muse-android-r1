@@ -82,8 +82,8 @@ class LocalProvisionServer(
                 return badRequest("Only WPA2 is supported in this version")
             }
 
-            val wifiManager = context.getSystemService(WifiManager::class.java)
-            val ok = WifiProvisioner.connect(wifiManager, ssid, password)
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val ok = if (wifiManager != null) WifiProvisioner.connect(wifiManager, ssid, password) else false
 
             Log.i(TAG, "Wi‑Fi provisioning requested for $ssid, result=$ok")
 

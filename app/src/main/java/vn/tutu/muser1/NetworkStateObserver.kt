@@ -8,8 +8,8 @@ import java.net.NetworkInterface
 object NetworkStateObserver {
 
     fun currentSummary(context: Context): String {
-        val wifiManager = context.getSystemService(WifiManager::class.java)
-        val ssid = wifiManager.connectionInfo?.ssid?.removeSurrounding("\"")
+        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        val ssid = wifiManager?.connectionInfo?.ssid?.removeSurrounding("\"")
         val ip = currentIpv4()
 
         return buildString {

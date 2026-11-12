@@ -42,7 +42,7 @@ class CommandRouter(private val context: Context) {
             return
         }
 
-        val audioManager = context.getSystemService(AudioManager::class.java)
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         val targetVolume = (value * maxVolume) / 100
 

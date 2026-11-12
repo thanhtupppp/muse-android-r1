@@ -19,6 +19,7 @@ class DiscoveryResponder(
 
     private var socket: DatagramSocket? = null
     private var listenerJob: Job? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
 
     fun start() {
         if (socket?.isBound == true) {
@@ -26,6 +27,16 @@ class DiscoveryResponder(
         }
 
         try {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            try {
+                multicastLock = wifiManager?.createMulticastLock("muse_r1_discovery")?.apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Không thể giữ MulticastLock", e)
+            }
+
             socket = DatagramSocket(port).apply {
                 broadcast = true
             }
@@ -72,11 +83,18 @@ class DiscoveryResponder(
         listenerJob = null
         socket?.close()
         socket = null
+        try {
+            if (multicastLock?.isHeld == true) {
+                multicastLock?.release()
+            }
+        } catch (_: Exception) {
+        }
+        multicastLock = null
     }
 
     private fun buildResponse(): String {
-        val wifiManager = context.getSystemService(WifiManager::class.java)
-        val ssid = wifiManager.connectionInfo?.ssid
+        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        val ssid = wifiManager?.connectionInfo?.ssid
             ?.removeSurrounding("\"")
             .orEmpty()
 
