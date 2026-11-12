@@ -8,6 +8,7 @@ import com.tananaev.adblib.AdbConnection
 import com.tananaev.adblib.AdbCrypto
 import com.tananaev.adblib.AdbStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -95,13 +96,12 @@ class R1Installer(
 
             val host = speakerIp.trim()
             val port = 5555
+            val remotePath = "/data/local/tmp/muse_r1_agent.apk"
+
             onProgress("1/5: Đang kết nối TCP tới loa R1 ($host:$port)...", 0.05f)
 
-            val socket = try {
-                Socket().apply {
-                    connect(InetSocketAddress(host, port), 8_000)
-                    soTimeout = 30_000
-                }
+            var (currentSocket, currentConnection) = try {
+                openConnection(host, port)
             } catch (e: Exception) {
                 throw IOException(
                     "Không thể kết nối đến $host:$port (${e.message ?: "timeout"}). " +
@@ -110,24 +110,19 @@ class R1Installer(
                 )
             }
 
-            socket.use { s ->
-                onProgress("2/5: Bắt tay xác thực ADB với loa R1...", 0.15f)
-                val crypto = getOrCreateAdbCrypto()
-                val connection = AdbConnection.create(s, crypto)
-                try {
-                    connection.connect()
-                } catch (e: Exception) {
-                    throw IOException("Xác thực ADB thất bại: ${e.message}", e)
-                }
-                onProgress("Đã thiết lập kết nối ADB thành công!", 0.20f)
+            try {
+                onProgress("2/5: Bắt tay xác thực ADB với loa R1 thành công!", 0.15f)
 
-                val remotePath = "/data/local/tmp/muse_r1_agent.apk"
-                runShell(connection, "rm -f $remotePath")
+                try {
+                    runShell(currentConnection, "rm -f $remotePath")
+                } catch (e: Exception) {
+                    Log.w("R1Installer", "Non-fatal rm error before push", e)
+                }
 
                 onProgress("3/5: Bắt đầu truyền APK ($apkSizeMb) lên $remotePath...", 0.20f)
 
                 pushApk(
-                    connection = connection,
+                    connection = currentConnection,
                     apkFile = apkFile,
                     remotePath = remotePath
                 ) { pushedBytes, totalBytes ->
@@ -141,11 +136,22 @@ class R1Installer(
 
                 onProgress("Đã đẩy file APK thành công. Xác nhận kênh Sync OKAY...", 0.75f)
 
+                // Give disk write & service teardown a moment to complete
+                delay(600)
+
                 onProgress("4/5: Đang thực thi: pm install -r $remotePath... (Vui lòng đợi 5-15 giây)", 0.80f)
-                val installOutput = runShell(
-                    connection = connection,
-                    command = "pm install -r $remotePath"
-                )
+
+                val installOutput = try {
+                    runShell(currentConnection, "pm install -r $remotePath")
+                } catch (e: Exception) {
+                    Log.w("R1Installer", "Stream rejected after sync, reconnecting fresh ADB...", e)
+                    onProgress("Thiết lập kết nối ADB mới để chạy pm install...", 0.82f)
+                    closeQuietly(currentSocket, currentConnection)
+                    val fresh = openConnection(host, port)
+                    currentSocket = fresh.first
+                    currentConnection = fresh.second
+                    runShell(currentConnection, "pm install -r $remotePath")
+                }
                 Log.d("R1Installer", "Install output: $installOutput")
 
                 if (!installOutput.contains("Success", ignoreCase = true)) {
@@ -154,14 +160,51 @@ class R1Installer(
                 onProgress("Cài đặt APK thành công! (pm install: Success)", 0.90f)
 
                 onProgress("5/5: Đang khởi động Muse R1 Agent Service...", 0.95f)
-                val launchOutput = runShell(
-                    connection = connection,
-                    command = "monkey -p vn.tutu.muser1 -c android.intent.category.LAUNCHER 1; am startservice vn.tutu.muser1/.AgentService"
-                )
+                val launchOutput = try {
+                    runShell(
+                        connection = currentConnection,
+                        command = "monkey -p vn.tutu.muser1 -c android.intent.category.LAUNCHER 1; am startservice vn.tutu.muser1/.AgentService"
+                    )
+                } catch (e: Exception) {
+                    Log.w("R1Installer", "Stream rejected for launch, reconnecting fresh ADB...", e)
+                    closeQuietly(currentSocket, currentConnection)
+                    val fresh = openConnection(host, port)
+                    currentSocket = fresh.first
+                    currentConnection = fresh.second
+                    runShell(
+                        connection = currentConnection,
+                        command = "monkey -p vn.tutu.muser1 -c android.intent.category.LAUNCHER 1; am startservice vn.tutu.muser1/.AgentService"
+                    )
+                }
                 Log.d("R1Installer", "Launch output: $launchOutput")
 
                 onProgress("Hoàn tất! Muse R1 Agent đã được cài đặt và khởi động trên loa.", 1.0f)
+            } finally {
+                closeQuietly(currentSocket, currentConnection)
             }
+        }
+    }
+
+    private fun openConnection(host: String, port: Int): Pair<Socket, AdbConnection> {
+        val socket = Socket().apply {
+            connect(InetSocketAddress(host, port), 8_000)
+            soTimeout = 60_000
+            tcpNoDelay = true
+        }
+        val crypto = getOrCreateAdbCrypto()
+        val connection = AdbConnection.create(socket, crypto)
+        connection.connect()
+        return Pair(socket, connection)
+    }
+
+    private fun closeQuietly(socket: Socket?, connection: AdbConnection?) {
+        try {
+            connection?.close()
+        } catch (_: Exception) {
+        }
+        try {
+            socket?.close()
+        } catch (_: Exception) {
         }
     }
 
@@ -234,6 +277,15 @@ class R1Installer(
             stream.write(done)
 
             readSyncResponse(stream)
+
+            // Gracefully terminate the sync service
+            try {
+                val quit = ByteArray(8)
+                writeString(quit, 0, "QUIT")
+                writeInt(quit, 4, 0)
+                stream.write(quit)
+            } catch (_: Exception) {
+            }
         } finally {
             try {
                 stream.close()
