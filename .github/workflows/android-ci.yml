@@ -32,3 +32,13 @@ jobs:
         run: bash ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
       - name: Test and build Mobile
         run: bash ./gradlew --no-daemon :mobile:testDebugUnitTest :mobile:assembleDebug
+
+      - name: Upload debug APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: muse-r1-debug-apks
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            mobile/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
