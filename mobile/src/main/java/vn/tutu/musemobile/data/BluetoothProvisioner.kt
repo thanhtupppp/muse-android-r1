@@ -18,7 +18,7 @@ import java.util.UUID
 class BluetoothProvisioner(private val context: Context) {
     companion object {
         private val MUSE_R1_SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
-        private const val DEVICE_NAME_PREFIX = "Muse R1"
+        private const val DEVICE_NAME_PREFIX = "Phicomm_R1_"
         private const val MAX_RESPONSE_BYTES = 1024
     }
     private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
@@ -33,21 +33,21 @@ class BluetoothProvisioner(private val context: Context) {
     fun getBondedR1Devices(): List<BluetoothDevice> {
         val adapter = bluetoothAdapter ?: return emptyList()
         if (!adapter.isEnabled) return emptyList()
-        return adapter.bondedDevices?.filter { it.name?.startsWith(DEVICE_NAME_PREFIX) == true } ?: emptyList()
+        return adapter.bondedDevices?.filter { it.name?.startsWith(DEVICE_NAME_PREFIX, ignoreCase = true) == true } ?: emptyList()
     }
     @SuppressLint("MissingPermission")
     suspend fun findR1Device(): Result<BluetoothDevice> = withContext(Dispatchers.IO) { runCatching {
         val adapter = bluetoothAdapter ?: throw IOException("Thiết bị không hỗ trợ Bluetooth")
         if (!adapter.isEnabled) throw IOException("Bluetooth đang tắt")
         val bonded = adapter.bondedDevices ?: throw IOException("Không đọc được danh sách Bluetooth")
-        bonded.firstOrNull { it.name?.startsWith(DEVICE_NAME_PREFIX) == true }
+        bonded.firstOrNull { it.name?.startsWith(DEVICE_NAME_PREFIX, ignoreCase = true) == true }
             ?: throw IOException("Không tìm thấy Muse R1. Hãy bật Bluetooth trên loa và ghép thiết bị.")
     } }
     @SuppressLint("MissingPermission")
     suspend fun provisionWifi(device: BluetoothDevice, ssid: String, password: String): Result<Unit> = withContext(Dispatchers.IO) { runCatching {
         require(ssid.isNotBlank()) { "SSID không được để trống" }
         require(password.length >= 8) { "Mật khẩu WPA2 cần ít nhất 8 ký tự" }
-        device.createRfcommSocketToServiceRecord(MUSE_R1_SPP_UUID).use { socket ->
+        device.createInsecureRfcommSocketToServiceRecord(MUSE_R1_SPP_UUID).use { socket ->
             socket.connect()
             sendProvisionPayload(socket, ssid, password)
             readResponse(socket)
