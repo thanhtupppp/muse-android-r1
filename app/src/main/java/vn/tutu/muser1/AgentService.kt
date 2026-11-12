@@ -3,18 +3,33 @@ package vn.tutu.muser1
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 
 /**
  * Headless background agent cho Phicomm R1.
  *
- * Service này giữ kết nối MQTT và xử lý lệnh từ Muse Mobile App.
- * Sau này, MuseGadgetClient sẽ kết nối R1 với Meta Muse Gadget SDK.
+ * Service này:
+ * - Giữ kết nối MQTT.
+ * - Nhận lệnh từ Muse Mobile App.
+ * - Chuẩn bị kết nối Muse Gadget SDK.
+ * - Gửi telemetry định kỳ.
  */
 class AgentService : Service() {
 
     private var mqttAgent: MqttAgent? = null
+    private var telemetryReporter: TelemetryReporter? = null
+    private var museGadgetClient: MuseGadgetClient? = null
+    private val handler = Handler(Looper.getMainLooper())
+
+    private val telemetryTask = object : Runnable {
+        override fun run() {
+            telemetryReporter?.publishSnapshot()
+            handler.postDelayed(this, TELEMETRY_INTERVAL_MS)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -33,6 +48,7 @@ class AgentService : Service() {
     }
 
     override fun onDestroy() {
+        handler.removeCallbacks(telemetryTask)
         mqttAgent?.disconnect()
         mqttAgent = null
         Log.i(TAG, "Agent service destroyed")
@@ -42,7 +58,11 @@ class AgentService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun startAgent() {
-        if (mqttAgent?.isConnected() == true) {
+        val deviceId = MusePreferences.getDeviceId(this)
+
+        if (deviceId.isEmpty()) {
+            Log.w(TAG, "Device ID is missing")
+            stopSelf()
             return
         }
 
@@ -50,15 +70,21 @@ class AgentService : Service() {
         mqttAgent = MqttAgent(
             context = this,
             host = MusePreferences.getMqttHost(this),
-            deviceId = MusePreferences.getDeviceId(this),
+            deviceId = deviceId,
             commandRouter = CommandRouter(this)
         )
 
+        museGadgetClient = MuseGadgetClient(this, deviceId)
+        telemetryReporter = TelemetryReporter(this, deviceId, mqttAgent!!)
+
         mqttAgent?.connect()
+        handler.removeCallbacks(telemetryTask)
+        handler.postDelayed(telemetryTask, TELEMETRY_INTERVAL_MS)
     }
 
     companion object {
         private const val TAG = "MuseR1"
+        private const val TELEMETRY_INTERVAL_MS = 30_000L
 
         fun start(context: Context) {
             context.startService(Intent(context, AgentService::class.java))

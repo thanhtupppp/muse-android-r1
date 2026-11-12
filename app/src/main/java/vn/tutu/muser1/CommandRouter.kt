@@ -6,14 +6,17 @@ import android.util.Log
 import org.json.JSONObject
 
 /**
- * Router các lệnh nhận từ Muse Mobile App hoặc Muse Gadget SDK.
+ * Router lệnh nhận từ Muse Mobile App.
  *
  * Payload mẫu:
  * {"action":"set_volume","value":60}
  * {"action":"tts","text":"Xin chào Tu"}
  * {"action":"stop"}
+ * {"action":"muse_status"}
  */
 class CommandRouter(private val context: Context) {
+
+    private val museCommandSurface = MuseCommandSurface(context)
 
     fun handle(rawPayload: String) {
         try {
@@ -25,6 +28,7 @@ class CommandRouter(private val context: Context) {
                 "tts" -> handleTts(payload.optString("text"))
                 "stop" -> Log.i(TAG, "Stop command received")
                 "wifi_status" -> Log.i(TAG, NetworkStateObserver.currentSummary(context))
+                "muse_status" -> Log.i(TAG, museCommandSurface.execute("{\"name\":\"muse_r1.get_status\"}"))
                 else -> Log.w(TAG, "Unknown command: $action")
             }
         } catch (error: Exception) {
@@ -42,12 +46,7 @@ class CommandRouter(private val context: Context) {
         val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         val targetVolume = (value * maxVolume) / 100
 
-        audioManager.setStreamVolume(
-            AudioManager.STREAM_MUSIC,
-            targetVolume,
-            0
-        )
-
+        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVolume, 0)
         Log.i(TAG, "Volume set to $value% ($targetVolume/$maxVolume)")
     }
 
@@ -57,7 +56,6 @@ class CommandRouter(private val context: Context) {
             return
         }
 
-        // Sẽ tích hợp TTS engine trong giai đoạn tiếp theo.
         Log.i(TAG, "TTS requested: $text")
     }
 

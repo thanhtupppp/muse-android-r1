@@ -15,7 +15,11 @@ import android.util.Log
  *
  * Cấu hình agent:
  * adb shell am broadcast -a vn.tutu.muser1.CONFIGURE_AGENT \
- *   --es mqtt_host "mqtt://192.168.1.10:1883" --es device_id "R1-001"
+ *   --es mqtt_host "tcp://192.168.1.10:1883" --es device_id "R1-001"
+ *
+ * Cấu hình Muse token:
+ * adb shell am broadcast -a vn.tutu.muser1.CONFIGURE_MUSE \
+ *   --es muse_token "mgst_..."
  */
 class ProvisionReceiver : BroadcastReceiver() {
 
@@ -23,6 +27,7 @@ class ProvisionReceiver : BroadcastReceiver() {
         when (intent.action) {
             ACTION_PROVISION_WIFI -> provisionWifi(context, intent)
             ACTION_CONFIGURE_AGENT -> configureAgent(context, intent)
+            ACTION_CONFIGURE_MUSE -> configureMuse(context, intent)
         }
     }
 
@@ -54,15 +59,33 @@ class ProvisionReceiver : BroadcastReceiver() {
         Log.i(TAG, "Agent configured: deviceId=$deviceId, mqtt=$mqttHost")
     }
 
+    private fun configureMuse(context: Context, intent: Intent) {
+        val museToken = intent.getStringExtra(EXTRA_MUSE_TOKEN)?.trim().orEmpty()
+
+        if (museToken.isEmpty()) {
+            Log.e(TAG, "Muse token is empty")
+            return
+        }
+
+        val saved = MuseGadgetClient(context, MusePreferences.getDeviceId(context))
+            .setToken(museToken)
+
+        if (saved) {
+            AgentService.start(context)
+        }
+    }
+
     companion object {
         private const val TAG = "MuseR1"
 
         const val ACTION_PROVISION_WIFI = "vn.tutu.muser1.PROVISION_WIFI"
         const val ACTION_CONFIGURE_AGENT = "vn.tutu.muser1.CONFIGURE_AGENT"
+        const val ACTION_CONFIGURE_MUSE = "vn.tutu.muser1.CONFIGURE_MUSE"
 
         const val EXTRA_SSID = "ssid"
         const val EXTRA_PASSWORD = "password"
         const val EXTRA_MQTT_HOST = "mqtt_host"
         const val EXTRA_DEVICE_ID = "device_id"
+        const val EXTRA_MUSE_TOKEN = "muse_token"
     }
 }

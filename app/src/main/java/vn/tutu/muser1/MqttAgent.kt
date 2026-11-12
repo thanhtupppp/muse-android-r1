@@ -1,6 +1,5 @@
 package vn.tutu.muser1
 
-import android.content.Context
 import android.util.Log
 import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken
 import org.eclipse.paho.client.mqttv3.MqttCallback
@@ -16,9 +15,9 @@ import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
  * - muse/r1/{deviceId}/cmd
  * - muse/r1/{deviceId}/status
  * - muse/r1/{deviceId}/event
+ * - muse/r1/{deviceId}/telemetry
  */
 class MqttAgent(
-    private val context: Context,
     private val host: String,
     private val deviceId: String,
     private val commandRouter: CommandRouter
@@ -45,7 +44,7 @@ class MqttAgent(
             val commandTopic = "muse/r1/$deviceId/cmd"
             newClient.subscribe(commandTopic, 1)
 
-            publishStatus("online")
+            publish("muse/r1/$deviceId/status", "\"online\"")
             client = newClient
 
             Log.i(TAG, "MQTT connected: $brokerUrl, topic=$commandTopic")
@@ -68,15 +67,7 @@ class MqttAgent(
         return client?.isConnected == true
     }
 
-    fun publishStatus(status: String) {
-        publish("muse/r1/$deviceId/status", "\"$status\"")
-    }
-
-    fun publishEvent(event: String) {
-        publish("muse/r1/$deviceId/event", "\"$event\"")
-    }
-
-    private fun publish(topic: String, payload: String) {
+    fun publish(topic: String, payload: String) {
         try {
             val mqttClient = client ?: return
 
