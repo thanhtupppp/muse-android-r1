@@ -1,9 +1,11 @@
 package vn.tutu.musemobile.data
 
 import android.content.Context
+import android.util.Base64
 import android.util.Log
+import com.tananaev.adblib.AdbBase64
 import com.tananaev.adblib.AdbConnection
-import com.tananaev.adblib.AdbKeyPair
+import com.tananaev.adblib.AdbCrypto
 import com.tananaev.adblib.AdbStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -70,15 +72,16 @@ class R1Installer(
         runCatching {
             val host = speakerIp.trim()
             val port = 5555
-            onProgress("Đang kết nối ADB tới R1...")
+            onProgress("Đang kết nối ADB tới R1 ($host:$port)...")
             Socket().apply {
                 connect(InetSocketAddress(host, port), 10_000)
                 soTimeout = 30_000
             }.use { socket ->
-                val keyPair = AdbKeyPair.generate()
-                val connection = AdbConnection.create(socket, keyPair)
+                val crypto = getOrCreateAdbCrypto()
+                val connection = AdbConnection.create(socket, crypto)
                 connection.connect()
                 onProgress("Đã kết nối ADB tới R1")
+
                 val remotePath = "/data/local/tmp/muse_r1_agent.apk"
                 onProgress("Đang đẩy APK lên R1...")
                 pushApk(
@@ -86,6 +89,7 @@ class R1Installer(
                     apkFile = apkFile,
                     remotePath = remotePath
                 )
+
                 onProgress("Đang cài APK lên R1...")
                 val installOutput = runShell(
                     connection = connection,
@@ -95,13 +99,34 @@ class R1Installer(
                 if (!installOutput.contains("Success", ignoreCase = true)) {
                     throw IOException("Cài APK thất bại: $installOutput")
                 }
+
                 onProgress("Đang khởi động Muse R1 Agent...")
                 runShell(
                     connection = connection,
-                    command = "monkey -p vn.tutu.museagent -c android.intent.category.LAUNCHER 1"
+                    command = "monkey -p vn.tutu.museagent -c android.intent.category.LAUNCHER 1; am startservice vn.tutu.muser1/.AgentService"
                 )
                 onProgress("Đã cài và khởi động Muse R1 Agent")
             }
+        }
+    }
+
+    private fun getOrCreateAdbCrypto(): AdbCrypto {
+        val base64 = AdbBase64 { data ->
+            Base64.encodeToString(data, Base64.NO_WRAP)
+        }
+        val privKey = File(context.filesDir, "adbkey")
+        val pubKey = File(context.filesDir, "adbkey.pub")
+        return try {
+            if (privKey.exists() && pubKey.exists()) {
+                AdbCrypto.loadAdbKeyPair(base64, privKey, pubKey)
+            } else {
+                AdbCrypto.generateAdbKeyPair(base64).also {
+                    it.saveAdbKeyPair(privKey, pubKey)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("R1Installer", "Failed to load/save ADB key pair, generating transient key", e)
+            AdbCrypto.generateAdbKeyPair(base64)
         }
     }
 
@@ -119,6 +144,7 @@ class R1Installer(
             writeInt(sendHeader, 4, (mode shl 16) or pathBytes.size)
             System.arraycopy(pathBytes, 0, sendHeader, 8, pathBytes.size)
             stream.write(sendHeader)
+
             apkFile.inputStream().use { input ->
                 val buffer = ByteArray(8192)
                 var read: Int
@@ -130,6 +156,7 @@ class R1Installer(
                     stream.write(chunk)
                 }
             }
+
             val done = ByteArray(8)
             writeString(done, 0, "DONE")
             writeInt(done, 4, (System.currentTimeMillis() / 1000).toInt())
@@ -150,11 +177,13 @@ class R1Installer(
         val stream = connection.open("shell:$command")
         val output = StringBuilder()
         try {
-            val input = stream.source
-            val buffer = ByteArray(4096)
-            var read: Int
-            while (input.read(buffer).also { read = it } != -1) {
-                output.append(String(buffer, 0, read, Charsets.UTF_8))
+            while (!stream.isClosed) {
+                try {
+                    val buffer = stream.read()
+                    output.append(String(buffer, Charsets.UTF_8))
+                } catch (_: Exception) {
+                    break
+                }
             }
         } finally {
             try {
@@ -185,4 +214,3 @@ class R1Installer(
         target[offset + 3] = ((value shr 24) and 0xFF).toByte()
     }
 }
-

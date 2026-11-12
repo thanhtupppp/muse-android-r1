@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import vn.tutu.musemobile.data.R1ApiClient
 import vn.tutu.musemobile.data.R1DiscoveryClient
+import vn.tutu.musemobile.data.R1Installer
 import vn.tutu.musemobile.data.WifiScanner
 
 class ProvisioningViewModel(application: Application) : AndroidViewModel(application) {
@@ -17,6 +18,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     private val apiClient = R1ApiClient()
     private val discoveryClient = R1DiscoveryClient()
     private val wifiScanner = WifiScanner(application)
+    private val installer = R1Installer(application)
 
     var state by mutableStateOf<ProvisioningState>(ProvisioningState.Idle)
         private set
@@ -131,5 +133,26 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     fun retry() {
         state = ProvisioningState.Idle
         status = "Sẵn sàng thử lại."
+    }
+
+    fun installR1Agent(apkUrl: String) {
+        viewModelScope.launch {
+            status = "Bắt đầu tải Agent APK..."
+            installer.downloadAgentApk(apkUrl) { percent ->
+                status = "Đang tải Agent: $percent%"
+            }.onSuccess { apkFile ->
+                status = "Đang cài Agent lên R1 qua ADB..."
+                installer.installAgent(
+                    speakerIp = speakerIp,
+                    apkFile = apkFile
+                ) { message ->
+                    status = message
+                }.onFailure { error ->
+                    status = "Lỗi cài Agent: ${error.message}"
+                }
+            }.onFailure { error ->
+                status = "Lỗi tải APK: ${error.message}"
+            }
+        }
     }
 }
