@@ -4,7 +4,8 @@ data class WifiNetwork(
     val ssid: String,
     val bssid: String,
     val frequencyMhz: Int,
-    val signalLevel: Int
+    val signalLevel: Int,
+    val security: String = "WPA2"
 ) {
     val is24Ghz: Boolean
         get() = frequencyMhz in 2400..2500
@@ -19,4 +20,7 @@ data class WifiNetwork(
             signalLevel >= -75 -> "Trung bình"
             else -> "Yếu"
         }
+
+    val isOpen: Boolean
+        get() = security.equals("OPEN", ignoreCase = true)
 }

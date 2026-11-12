@@ -45,9 +45,15 @@ object MusePreferences {
     }
 
     fun getDeviceId(context: Context): String {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_DEVICE_ID, "")
-            .orEmpty()
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val saved = prefs.getString(KEY_DEVICE_ID, "")
+        if (!saved.isNullOrEmpty()) return saved
+
+        val androidId = android.provider.Settings.Secure.getString(
+            context.contentResolver,
+            android.provider.Settings.Secure.ANDROID_ID
+        )
+        return if (!androidId.isNullOrEmpty()) "r1-$androidId" else "r1-device"
     }
 
     fun getMuseToken(context: Context): String {

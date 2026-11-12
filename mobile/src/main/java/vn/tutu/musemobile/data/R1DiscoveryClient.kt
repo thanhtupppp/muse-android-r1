@@ -54,9 +54,12 @@ class R1DiscoveryClient {
                 if (remaining <= 0) break
 
                 // Chờ tối đa 500ms mỗi nhịp receive để có thể retry gửi lại query nếu mất gói
-                socket.soTimeout = remaining.coerceAtMost(500)
+                val waitMs = remaining.coerceIn(1, 500)
+                socket.soTimeout = waitMs
 
                 try {
+                    // Reset packet length về buffer.size trước mỗi lần nhận để tránh bị cắt ngắn dữ liệu
+                    response.length = buffer.size
                     socket.receive(response)
                 } catch (_: SocketTimeoutException) {
                     continue
@@ -67,10 +70,9 @@ class R1DiscoveryClient {
                     val json = JSONObject(rawJson)
                     if (json.optString("service") != "muse-r1-agent") continue
 
-                    val deviceId = json.optString("device_id", "").trim()
-                    if (deviceId.isEmpty()) continue
-
                     val hostAddress = response.address?.hostAddress ?: continue
+                    val rawDeviceId = json.optString("device_id", "").trim()
+                    val deviceId = if (rawDeviceId.isNotEmpty()) rawDeviceId else "r1-${hostAddress.replace('.', '-')}"
 
                     return@withContext R1Device(
                         deviceId = deviceId,

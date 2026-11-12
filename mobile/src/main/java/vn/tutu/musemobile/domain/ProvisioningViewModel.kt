@@ -103,7 +103,11 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     fun selectWifiNetwork(network: WifiNetwork) {
         selectedNetwork = network
         state = ProvisioningState.SelectingWifi
-        status = "Đã chọn " + network.ssid + ". Nhập mật khẩu để tiếp tục."
+        status = if (network.isOpen) {
+            "Đã chọn mạng mở " + network.ssid + ". Bấm tiếp tục để gửi tới R1."
+        } else {
+            "Đã chọn " + network.ssid + " (" + network.security + "). Nhập mật khẩu để tiếp tục."
+        }
     }
 
     fun refreshWifiNetworks() {
@@ -178,8 +182,10 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
             return
         }
 
-        if (password.length < 8) {
-            state = ProvisioningState.Failure("Mật khẩu WPA2 cần ít nhất 8 ký tự")
+        val isOpen = network.isOpen
+        val isHexPsk = password.length == 64 && password.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
+        if (!isOpen && (password.length !in 8..63 && !isHexPsk)) {
+            state = ProvisioningState.Failure("Mật khẩu WPA2 cần từ 8 đến 63 ký tự hoặc khóa hex 64 ký tự")
             return
         }
 
