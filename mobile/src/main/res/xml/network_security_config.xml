@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- The R1 Agent exposes its local diagnostic/provisioning API on this
+         fixed hotspot address. Keep cleartext HTTP scoped to this host only. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">192.168.43.1</domain>
+    </domain-config>
+</network-security-config>
