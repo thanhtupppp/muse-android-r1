@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "MuseAndroidR1"
 include(":app")
+include(":mobile")
