@@ -3,6 +3,10 @@ package vn.tutu.musemobile.domain
 import android.annotation.SuppressLint
 import android.app.Application
 import android.bluetooth.BluetoothDevice
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.Build
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -22,7 +26,7 @@ import java.util.Locale
 
 class ProvisioningViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val apiClient = R1ApiClient()
+    private val apiClient = R1ApiClient(application)
     private val discoveryClient = R1DiscoveryClient()
     private val wifiScanner = WifiScanner(application)
     private val installer = R1Installer(application)
@@ -204,6 +208,15 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
 
         viewModelScope.launch {
             state = ProvisioningState.Provisioning
+
+            // Ép Android ưu tiên định tuyến gói tin qua Wi-Fi (bỏ qua 4G/5G khi Wi-Fi loa không có Internet)
+            val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val wifiNet = cm?.allNetworks?.firstOrNull { net ->
+                cm.getNetworkCapabilities(net)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+            }
+            if (wifiNet != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                cm.bindProcessToNetwork(wifiNet)
+            }
 
             // 1. Thử gửi trực tiếp qua HTTP (khi điện thoại đang nối Wi-Fi Phicomm_R1_xxx)
             val targetHttpIp = if (speakerIp.isNotBlank()) speakerIp.trim() else "192.168.43.1"

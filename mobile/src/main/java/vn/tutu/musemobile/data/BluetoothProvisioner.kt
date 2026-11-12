@@ -88,8 +88,12 @@ class BluetoothProvisioner(private val context: Context) {
                 "Mật khẩu cần rỗng (mạng mở), từ 8 đến 63 ký tự hoặc khóa hex 64 ký tự"
             }
 
-            // Dùng Secure RFCOMM qua liên kết đã ghép đôi với R1 để mã hóa dữ liệu truyền
-            val socket = device.createRfcommSocketToServiceRecord(MUSE_R1_SPP_UUID)
+            // Thử insecure RFCOMM trước để không bị Android 5.1/14 ép hủy liên kết bonding
+            val socket = try {
+                device.createInsecureRfcommSocketToServiceRecord(MUSE_R1_SPP_UUID)
+            } catch (_: Exception) {
+                device.createRfcommSocketToServiceRecord(MUSE_R1_SPP_UUID)
+            }
             try {
                 try {
                     withTimeout(CONNECT_TIMEOUT_MS) {

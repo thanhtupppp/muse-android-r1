@@ -185,6 +185,22 @@ fun WifiPickerScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                )
+            ) {
+                Text(
+                    text = "💡 Lưu ý: Trước khi bấm Kết nối, hãy đảm bảo điện thoại đang kết nối vào Wi‑Fi của loa (Phicomm_R1_xxx).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
             val canConnect = selectedNetwork != null && (
                 selectedNetwork.isOpen ||
                 password.length in 8..63 ||

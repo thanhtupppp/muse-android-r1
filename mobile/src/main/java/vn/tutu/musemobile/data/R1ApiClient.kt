@@ -1,5 +1,9 @@
 package vn.tutu.musemobile.data
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.Build
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -9,13 +13,30 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import javax.net.SocketFactory
 
-class R1ApiClient {
+class R1ApiClient(private val context: Context? = null) {
 
-    private val httpClient = OkHttpClient.Builder()
+    private val baseHttpClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
+
+    private fun getHttpClient(): OkHttpClient {
+        val ctx = context ?: return baseHttpClient
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return baseHttpClient
+        val wifiNetwork = cm.allNetworks.firstOrNull { network ->
+            cm.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        } ?: return baseHttpClient
+
+        return try {
+            baseHttpClient.newBuilder()
+                .socketFactory(wifiNetwork.socketFactory)
+                .build()
+        } catch (_: Exception) {
+            baseHttpClient
+        }
+    }
 
     private fun isValidIpv4(ip: String): Boolean {
         val regex = Regex("^(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)(\\.(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3}$")
@@ -33,7 +54,7 @@ class R1ApiClient {
                 reqBuilder.addHeader("x-muse-token", token)
             }
 
-            httpClient.newCall(reqBuilder.build()).execute().use { response ->
+            getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
                 val rawBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     val sample = rawBody.take(500)
@@ -56,7 +77,7 @@ class R1ApiClient {
                 reqBuilder.addHeader("x-muse-token", token)
             }
 
-            httpClient.newCall(reqBuilder.build()).execute().use { response ->
+            getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
                 val rawBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     val sample = rawBody.take(500)
@@ -112,7 +133,7 @@ class R1ApiClient {
                 reqBuilder.addHeader("x-muse-token", token)
             }
 
-            httpClient.newCall(reqBuilder.build()).execute().use { response ->
+            getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
                 val rawBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     val sample = rawBody.take(500)
