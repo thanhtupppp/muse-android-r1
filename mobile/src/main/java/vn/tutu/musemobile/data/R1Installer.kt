@@ -113,12 +113,6 @@ class R1Installer(
             try {
                 onProgress("2/5: Bắt tay xác thực ADB với loa R1 thành công!", 0.15f)
 
-                try {
-                    runShell(currentConnection, "rm -f $remotePath")
-                } catch (e: Exception) {
-                    Log.w("R1Installer", "Non-fatal rm error before push", e)
-                }
-
                 onProgress("3/5: Bắt đầu truyền APK ($apkSizeMb) lên $remotePath...", 0.20f)
 
                 pushApk(
@@ -136,22 +130,18 @@ class R1Installer(
 
                 onProgress("Đã đẩy file APK thành công. Xác nhận kênh Sync OKAY...", 0.75f)
 
-                // Give disk write & service teardown a moment to complete
-                delay(600)
+                // Đóng sạch kết nối Sync để adbd giải phóng tài nguyên hoàn toàn
+                closeQuietly(currentSocket, currentConnection)
+                delay(800)
 
                 onProgress("4/5: Đang thực thi: pm install -r $remotePath... (Vui lòng đợi 5-15 giây)", 0.80f)
 
-                val installOutput = try {
-                    runShell(currentConnection, "pm install -r $remotePath")
-                } catch (e: Exception) {
-                    Log.w("R1Installer", "Stream rejected after sync, reconnecting fresh ADB...", e)
-                    onProgress("Thiết lập kết nối ADB mới để chạy pm install...", 0.82f)
-                    closeQuietly(currentSocket, currentConnection)
-                    val fresh = openConnection(host, port)
-                    currentSocket = fresh.first
-                    currentConnection = fresh.second
-                    runShell(currentConnection, "pm install -r $remotePath")
-                }
+                // Mở kết nối ADB mới sạch sẽ cho phiên chạy lệnh shell
+                val fresh = openConnection(host, port)
+                currentSocket = fresh.first
+                currentConnection = fresh.second
+
+                val installOutput = runShell(currentConnection, "pm install -r $remotePath")
                 Log.d("R1Installer", "Install output: $installOutput")
 
                 if (!installOutput.contains("Success", ignoreCase = true)) {
@@ -160,22 +150,10 @@ class R1Installer(
                 onProgress("Cài đặt APK thành công! (pm install: Success)", 0.90f)
 
                 onProgress("5/5: Đang khởi động Muse R1 Agent Service...", 0.95f)
-                val launchOutput = try {
-                    runShell(
-                        connection = currentConnection,
-                        command = "monkey -p vn.tutu.muser1 -c android.intent.category.LAUNCHER 1; am startservice vn.tutu.muser1/.AgentService"
-                    )
-                } catch (e: Exception) {
-                    Log.w("R1Installer", "Stream rejected for launch, reconnecting fresh ADB...", e)
-                    closeQuietly(currentSocket, currentConnection)
-                    val fresh = openConnection(host, port)
-                    currentSocket = fresh.first
-                    currentConnection = fresh.second
-                    runShell(
-                        connection = currentConnection,
-                        command = "monkey -p vn.tutu.muser1 -c android.intent.category.LAUNCHER 1; am startservice vn.tutu.muser1/.AgentService"
-                    )
-                }
+                val launchOutput = runShell(
+                    connection = currentConnection,
+                    command = "monkey -p vn.tutu.muser1 -c android.intent.category.LAUNCHER 1; am startservice vn.tutu.muser1/.AgentService"
+                )
                 Log.d("R1Installer", "Launch output: $launchOutput")
 
                 onProgress("Hoàn tất! Muse R1 Agent đã được cài đặt và khởi động trên loa.", 1.0f)
@@ -236,12 +214,11 @@ class R1Installer(
     ) {
         val stream = connection.open("sync:")
         try {
-            val pathBytes = remotePath.toByteArray(Charsets.UTF_8)
-            val mode = 33188 // 0100644 octal (S_IFREG | 0644)
-
+            val pathAndMode = "$remotePath,33188"
+            val pathBytes = pathAndMode.toByteArray(Charsets.UTF_8)
             val sendHeader = ByteArray(8 + pathBytes.size)
             writeString(sendHeader, 0, "SEND")
-            writeInt(sendHeader, 4, (mode shl 16) or pathBytes.size)
+            writeInt(sendHeader, 4, pathBytes.size)
             System.arraycopy(pathBytes, 0, sendHeader, 8, pathBytes.size)
             stream.write(sendHeader)
 
