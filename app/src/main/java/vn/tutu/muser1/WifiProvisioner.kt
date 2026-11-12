@@ -76,7 +76,17 @@ object WifiProvisioner {
                 Log.w(TAG, "addNetwork returned -1; searching configured networks")
                 val existingId = findExistingNetworkId(wifiManager, cleanSsid)
                 if (existingId == -1) {
-                    return fail("Android từ chối addNetwork và không tìm thấy mạng đã lưu cùng SSID")
+                    val configured = try { wifiManager.configuredNetworks } catch (error: Exception) {
+                        Log.e(TAG, "Reading configuredNetworks failed", error)
+                        null
+                    }
+                    val configuredSummary = when {
+                        configured == null -> "null/không được firmware cung cấp"
+                        configured.isEmpty() -> "rỗng"
+                        else -> configured.joinToString(limit = 8) { it.SSID ?: "<SSID-null>" }
+                    }
+                    val wifiState = try { wifiManager.wifiState.toString() } catch (_: Exception) { "unknown" }
+                    return fail("addNetwork=-1; configuredNetworks=$configuredSummary; wifiState=$wifiState; kiểm tra SoftAP/firmware Wi-Fi")
                 }
                 configuration.networkId = existingId
                 networkId = wifiManager.updateNetwork(configuration)
