@@ -14,14 +14,14 @@ import android.util.Log
  * Service này:
  * - Giữ kết nối MQTT.
  * - Nhận lệnh từ Muse Mobile App.
- * - Chuẩn bị kết nối Muse Gadget SDK.
+ * - Kết nối Muse VM qua WebSocket.
  * - Gửi telemetry định kỳ.
  */
 class AgentService : Service() {
 
     private var mqttAgent: MqttAgent? = null
+    private var museSessionAdapter: MuseSessionAdapter? = null
     private var telemetryReporter: TelemetryReporter? = null
-    private var museGadgetClient: MuseGadgetClient? = null
     private val handler = Handler(Looper.getMainLooper())
 
     private val telemetryTask = object : Runnable {
@@ -49,6 +49,7 @@ class AgentService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacks(telemetryTask)
+        museSessionAdapter?.stop()
         mqttAgent?.disconnect()
         mqttAgent = null
         Log.i(TAG, "Agent service destroyed")
@@ -67,17 +68,27 @@ class AgentService : Service() {
         }
 
         mqttAgent?.disconnect()
+        museSessionAdapter?.stop()
+
+        val commandSurface = MuseCommandSurface(this)
+
         mqttAgent = MqttAgent(
-            context = this,
             host = MusePreferences.getMqttHost(this),
             deviceId = deviceId,
             commandRouter = CommandRouter(this)
         )
 
-        museGadgetClient = MuseGadgetClient(this, deviceId)
+        museSessionAdapter = MuseSessionAdapter(
+            context = this,
+            deviceId = deviceId,
+            commandSurface = commandSurface
+        )
+
         telemetryReporter = TelemetryReporter(this, deviceId, mqttAgent!!)
 
         mqttAgent?.connect()
+        museSessionAdapter?.start()
+
         handler.removeCallbacks(telemetryTask)
         handler.postDelayed(telemetryTask, TELEMETRY_INTERVAL_MS)
     }

@@ -14,34 +14,63 @@ https://github.com/facebookincubator/muse-gadget-sdk
 - Báo trạng thái và telemetry.
 - Cung cấp command riêng cho loa: TTS, âm lượng, phát nhạc, Wi‑Fi, reboot.
 
-## Cách Muse pair gadget
-
-Theo Linux Device SDK:
-
-1. Tạo SDK token tại `gadgets.muse.ai > Account > SDK tokens`.
-2. Token có dạng `mgst_...`.
-3. Bật **Settings > Devices > Developer mode** trong Muse app.
-4. Chọn **Add Device** và tìm thiết bị có tiền tố `MuseGadget`.
-5. Chấp nhận cảnh báo community device.
-6. Chọn Wi‑Fi khi Muse hỏi.
-7. Thiết bị giữ kết nối xuyên suốt các lần reboot.
-
-Pairing mở trong 10 phút. Nếu đổi hoặc thu hồi token, cần pair lại. [Linux README]
-
-## Kiến trúc đang triển khai
+## Luồng session hiện tại
 
 ```text
-MuseGadgetClient
-├── Token store
-├── Pairing state
-├── Command surface
-├── Telemetry
-└── Muse session adapter (sẽ bổ sung)
+Muse SDK token
+      │
+      ▼
+POST /device_token/refresh
+      │
+      ▼
+access_token + refresh_token
+      │
+      ▼
+GET /fetch_vms
+      │
+      ▼
+Chọn VM default
+      │
+      ▼
+WebSocket tới VM
+      │
+      ▼
+link.register
 ```
 
-## Command surface an toàn
+## API đã port
 
-Hiện tại chỉ cho phép các command sau:
+| API | Method | Mục đích |
+|---|---|---|
+| `/fetch_vms` | GET | Lấy VM được lease cho device token |
+| `/device_token/refresh` | POST | Xoay access token và refresh token |
+
+`MuseApi.fetchVms()` gửi:
+
+- `Authorization: Bearer <access_token>`
+- `X-API-Version: 1.0.0`
+- `User-Agent: muse-android-r1/...`
+
+`MuseApi.refreshDeviceToken()` gửi:
+
+- `Authorization: Bearer hatch_refresh:<refresh_token>`
+- Body: `device_id`, optional `sdk_token`
+
+Nếu refresh trả HTTP 401, thiết bị phải pair lại với Muse. [Muse Linux SDK]
+
+## WebSocket VM
+
+`MuseSessionAdapter` hiện:
+
+1. Refresh token nếu cần.
+2. Gọi `/fetch_vms`.
+3. Chọn VM có `default = true`, hoặc VM đầu tiên.
+4. Kết nối WebSocket tới `vm_ws_url`.
+5. Gửi header `Authorization: Bearer <vm_auth_token>`.
+6. Gửi message `link.register` khi WebSocket mở.
+7. Chuyển message nhận được vào `MuseCommandSurface`.
+
+## Command surface an toàn
 
 | Command | Mô tả |
 |---|---|
@@ -53,25 +82,10 @@ Hiện tại chỉ cho phép các command sau:
 Không cho phép `system.run` chạy shell command tùy ý.
 Mọi lệnh hệ thống phải được map vào whitelist.
 
-## Ví dụ command
-
-```json
-{
-  "name": "muse_r1.set_volume",
-  "volume": 60
-}
-```
-
-```json
-{
-  "name": "muse_r1.tts",
-  "text": "Xin chào Tu"
-}
-```
-
 ## Bảo mật
 
 - SDK token lưu trong private SharedPreferences.
+- Access token và refresh token lưu private SharedPreferences.
 - Không log token, không commit token, không gửi token qua URL.
 - Không cho phép shell command tự do.
 - Local MQTT cần broker riêng, username/password hoặc token.
