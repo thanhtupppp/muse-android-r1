@@ -35,8 +35,11 @@
             </intent-filter>
         </receiver>
 
+        <!-- Allow ADB shell to start the service during installation, while
+             restricting external callers to the privileged shell permission. -->
         <service
             android:name=".AgentService"
-            android:exported="false" />
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
     </application>
 </manifest>
