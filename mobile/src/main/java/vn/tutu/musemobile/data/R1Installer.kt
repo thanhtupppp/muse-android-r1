@@ -104,12 +104,12 @@ class R1Installer(private val context: Context) {
                     ls -l $path
                     pm install -r $path
                     INSTALL_RC=$?
-                    echo MUSE_INSTALL_RC=${'
-                    if [ "${'
+                    echo MUSE_INSTALL_RC=${'$'}INSTALL_RC
+                    if [ "${'$'}INSTALL_RC" -ne 0 ]; then exit 11; fi
                     am startservice -n vn.tutu.muser1/.AgentService
                     START_RC=$?
-                    echo MUSE_START_RC=${'
-                    if [ "${'
+                    echo MUSE_START_RC=${'$'}START_RC
+                    if [ "${'$'}START_RC" -ne 0 ]; then exit 12; fi
                     sleep 1
                     if dumpsys activity services vn.tutu.muser1 | grep -q '.AgentService'; then
                         echo MUSE_AGENT_RUNNING
@@ -118,7 +118,6 @@ class R1Installer(private val context: Context) {
                         exit 13
                     fi
                 """.trimIndent()
-
                 onProgress("4/5: Đang kiểm tra và cài APK trong một shell duy nhất...", 0.80f)
                 val shellStream = try {
                     connection.open("shell:$command")
