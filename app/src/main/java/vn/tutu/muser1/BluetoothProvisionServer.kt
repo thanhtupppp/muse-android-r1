@@ -158,8 +158,9 @@ class BluetoothProvisionServer(
                     writeResponse(connection, "OK\n")
                     Log.d(TAG, "Đã gửi cấu hình Wi-Fi thành công")
                 } else {
-                    writeResponse(connection, "ERROR: Không kết nối được Wi-Fi\n")
-                    Log.w(TAG, "Kết nối Wi-Fi thất bại")
+                    val reason = wifiProvisioner.lastFailureReason.ifBlank { "Không rõ nguyên nhân" }
+                    writeResponse(connection, "ERROR: $reason\n")
+                    Log.w(TAG, "Kết nối Wi-Fi thất bại: $reason")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Lỗi xử lý Bluetooth client", e)
