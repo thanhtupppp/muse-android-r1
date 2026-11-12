@@ -12,14 +12,13 @@ import android.util.Log
  * Headless background agent cho Phicomm R1.
  *
  * Service này:
- * - Giữ kết nối MQTT.
- * - Nhận lệnh từ Muse Mobile App.
- * - Kết nối Muse VM qua WebSocket.
+ * - Chạy local HTTP provisioning server cho Muse Mobile App.
+ * - Giữ kết nối Muse session qua WebSocket.
  * - Gửi telemetry định kỳ.
  */
 class AgentService : Service() {
 
-    private var mqttAgent: MqttAgent? = null
+    private var provisionServer: LocalProvisionServer? = null
     private var museSessionAdapter: MuseSessionAdapter? = null
     private var telemetryReporter: TelemetryReporter? = null
     private val handler = Handler(Looper.getMainLooper())
@@ -37,60 +36,53 @@ class AgentService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (!MusePreferences.isAgentConfigured(this)) {
-            Log.w(TAG, "Agent is not configured. Waiting for CONFIGURE_AGENT broadcast.")
-            stopSelf()
-            return START_NOT_STICKY
-        }
-
-        startAgent()
+        startProvisioningServer()
+        startMuseSession()
         return START_STICKY
     }
 
     override fun onDestroy() {
         handler.removeCallbacks(telemetryTask)
+        provisionServer?.stopServer()
+        provisionServer = null
+
         museSessionAdapter?.stop()
-        mqttAgent?.disconnect()
-        mqttAgent = null
+        museSessionAdapter = null
+
         Log.i(TAG, "Agent service destroyed")
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun startAgent() {
-        val deviceId = MusePreferences.getDeviceId(this)
-
-        if (deviceId.isEmpty()) {
-            Log.w(TAG, "Device ID is missing")
-            stopSelf()
+    private fun startProvisioningServer() {
+        if (provisionServer?.wasStarted() == true) {
             return
         }
 
-        mqttAgent?.disconnect()
+        provisionServer = LocalProvisionServer(this)
+
+        if (provisionServer?.startServer() == true) {
+            Log.i(TAG, "Provisioning server ready on port ${LocalProvisionServer.DEFAULT_PORT}")
+        }
+    }
+
+    private fun startMuseSession() {
+        val deviceId = MusePreferences.getDeviceId(this)
+
+        if (deviceId.isEmpty()) {
+            Log.w(TAG, "Device ID is missing; Muse session will not start")
+            return
+        }
+
         museSessionAdapter?.stop()
-
-        val commandSurface = MuseCommandSurface(this)
-
-        mqttAgent = MqttAgent(
-            host = MusePreferences.getMqttHost(this),
-            deviceId = deviceId,
-            commandRouter = CommandRouter(this)
-        )
-
         museSessionAdapter = MuseSessionAdapter(
             context = this,
             deviceId = deviceId,
-            commandSurface = commandSurface
+            commandSurface = MuseCommandSurface(this)
         )
 
-        telemetryReporter = TelemetryReporter(this, deviceId, mqttAgent!!)
-
-        mqttAgent?.connect()
         museSessionAdapter?.start()
-
-        handler.removeCallbacks(telemetryTask)
-        handler.postDelayed(telemetryTask, TELEMETRY_INTERVAL_MS)
     }
 
     companion object {

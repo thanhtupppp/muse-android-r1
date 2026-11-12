@@ -13,7 +13,7 @@ muse-android-r1/
 
 | Module | Cài ở đâu | UI | Trách nhiệm |
 |---|---|---|---|
-| `app` | Phicomm R1 | Không | Wi‑Fi provisioning, Muse session, audio/TTS, local HTTP server |
+| `app` | Phicomm R1 | Không | Wi‑Fi provisioning, local HTTP server, Muse session, audio/TTS |
 | `mobile` | Điện thoại Android | Có | Thêm loa, chọn Wi‑Fi, cấu hình, điều khiển, chẩn đoán |
 
 ## Mobile provisioning flow
@@ -37,6 +37,10 @@ GET http://192.168.43.1:8080/health
 ```
 
 ```http
+GET http://192.168.43.1:8080/status
+```
+
+```http
 POST http://192.168.43.1:8080/provision-wifi
 Content-Type: application/json
 
@@ -54,10 +58,17 @@ Content-Type: application/json
 ./gradlew :mobile:assembleDebug
 ```
 
+## ADB recovery
+
+```bat
+adb shell am broadcast -a vn.tutu.muser1.PROVISION_WIFI --es ssid "TEN_WIFI_NHA" --es password "MAT_KHAU"
+adb shell am broadcast -a vn.tutu.muser1.CONFIGURE_MUSE --es muse_token "mgst_..."
+```
+
 ## Lưu ý
 
 - R1 chạy Android 5.1.1 / API 22.
 - `app` dùng `minSdk = 22`, `targetSdk = 28`.
 - `mobile` dùng `minSdk = 26`, `targetSdk = 34`.
 - Không dùng MQTT ở giai đoạn hiện tại.
-- Muse Mobile App không thay thế app Muse chính thức trong việc xác minh tài khoản hoặc pair gadget.
+- Local HTTP server chỉ phục vụ provisioning qua hotspot R1.
