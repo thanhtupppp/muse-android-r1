@@ -85,7 +85,11 @@ class R1ApiClient {
             require(!ssid.contains('\n') && !ssid.contains('\r')) { "SSID không được chứa ký tự xuống dòng" }
             require(!password.contains('\n') && !password.contains('\r')) { "Mật khẩu không được chứa ký tự xuống dòng" }
 
-            val resolvedSecurity = security ?: if (password.isEmpty()) "OPEN" else "WPA2"
+            val resolvedSecurity = when (security?.uppercase()) {
+                "OPEN" -> "OPEN"
+                "WPA", "WPA2", "WPA3" -> "WPA2"
+                else -> if (password.isEmpty()) "OPEN" else "WPA2"
+            }
 
             val isHexPsk = password.length == 64 && password.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
             val isValid = when (resolvedSecurity) {

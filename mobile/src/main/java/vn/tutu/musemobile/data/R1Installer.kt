@@ -69,11 +69,22 @@ class R1Installer(private val context: Context) {
                         throw IOException("SHA-256 của APK không khớp")
                     }
                 }
+                if (target.exists()) {
+                    target.delete()
+                }
                 if (!temp.renameTo(target)) {
-                    throw IOException("Không thể thay thế APK offline; giữ nguyên bản cũ")
+                    // Fallback sang stream copy nếu filesystem không hỗ trợ rename trực tiếp
+                    temp.inputStream().use { input ->
+                        target.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    temp.delete()
                 }
                 Result.success(target)
-            } finally { temp.delete() }
+            } finally {
+                if (temp.exists()) temp.delete()
+            }
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) { Result.failure(e) }
     }
@@ -110,7 +121,7 @@ class R1Installer(private val context: Context) {
                     fi
                     echo MUSE_APK_PRESENT
                     ls -l $path
-                    pm install -r $path
+                    pm install -r -d $path
                     INSTALL_RC=$?
                     echo MUSE_INSTALL_RC=${'$'}INSTALL_RC
                     if [ "${'$'}INSTALL_RC" -ne 0 ]; then exit 11; fi
@@ -184,7 +195,7 @@ class R1Installer(private val context: Context) {
                     logcat -d -t 120 -s MuseR1:I MuseR1:W MuseR1:E 2>&1
                 """.trimIndent()
                 report.append("=== ADB DEVICE DIAGNOSTICS ===\n")
-                report.append(readShell(connection.open("shell:$command")))
+                report.append(readShell(connection.open("shell:$command"), timeoutMs = 15_000))
             } finally {
                 closeQuietly(socket, connection)
             }
@@ -215,7 +226,7 @@ class R1Installer(private val context: Context) {
             }
             digest.digest().joinToString("") { "%02x".format(it) }
         }
-        return hash.equals(expectedSha256.trim().lowercase(), ignoreCase = false)
+        return hash.equals(expectedSha256.trim().lowercase(), ignoreCase = true)
     }
 
     private fun openConnection(host: String, port: Int): Pair<Socket, AdbConnection> {
@@ -242,8 +253,14 @@ class R1Installer(private val context: Context) {
         val base64 = AdbBase64 { Base64.encodeToString(it, Base64.NO_WRAP) }
         val privateKey = File(context.filesDir, "adbkey")
         val publicKey = File(context.filesDir, "adbkey.pub")
-        return if (privateKey.exists() && publicKey.exists()) {
-            AdbCrypto.loadAdbKeyPair(base64, privateKey, publicKey)
+        return if (privateKey.isFile && publicKey.isFile && privateKey.length() > 0 && publicKey.length() > 0) {
+            runCatching {
+                AdbCrypto.loadAdbKeyPair(base64, privateKey, publicKey)
+            }.getOrElse {
+                privateKey.delete()
+                publicKey.delete()
+                AdbCrypto.generateAdbKeyPair(base64).also { it.saveAdbKeyPair(privateKey, publicKey) }
+            }
         } else {
             AdbCrypto.generateAdbKeyPair(base64).also { it.saveAdbKeyPair(privateKey, publicKey) }
         }
@@ -264,7 +281,7 @@ class R1Installer(private val context: Context) {
                 while (true) {
                     val count = input.read(buffer)
                     if (count < 0) break
-                    stream.write(packet("DATA", count, buffer.copyOf(count)))
+                    stream.write(packet("DATA", count, buffer, 0, count))
                     pushed += count
                     val percent = ((pushed * 100) / apkFile.length()).toInt()
                     if (percent != last) { last = percent; onByteProgress(pushed, apkFile.length()) }
@@ -308,22 +325,43 @@ class R1Installer(private val context: Context) {
         val output = ByteArrayOutputStream()
         try {
             while (System.currentTimeMillis() < deadline) {
-                val bytes = try { stream.read() } catch (e: IOException) {
+                val bytes = try {
+                    stream.read()
+                } catch (e: IOException) {
                     if (stream.isClosed) break else throw e
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
                 }
-                if (output.size() + bytes.size > 1_048_576) throw IOException("Shell output quá dài")
+                if (bytes.isEmpty() || stream.isClosed) {
+                    if (bytes.isNotEmpty()) output.write(bytes)
+                    break
+                }
+                if (output.size() + bytes.size > 1_048_576) throw IOException("Shell output quá dài (> 1MB)")
                 output.write(bytes)
             }
-            if (System.currentTimeMillis() >= deadline) throw IOException("Shell timeout sau ${timeoutMs}ms")
-        } finally { try { stream.close() } catch (_: Exception) {} }
+            if (System.currentTimeMillis() >= deadline && !stream.isClosed) {
+                throw IOException("Shell timeout sau ${timeoutMs}ms")
+            }
+        } finally {
+            try { stream.close() } catch (_: Exception) {}
+        }
         return String(output.toByteArray(), Charsets.UTF_8)
     }
 
-    private fun packet(id: String, value: Int, payload: ByteArray = byteArrayOf()): ByteArray {
-        val result = ByteArray(8 + payload.size)
+    private fun packet(
+        id: String,
+        value: Int,
+        payload: ByteArray = byteArrayOf(),
+        offset: Int = 0,
+        length: Int = payload.size
+    ): ByteArray {
+        val result = ByteArray(8 + length)
         System.arraycopy(id.toByteArray(Charsets.US_ASCII), 0, result, 0, 4)
         for (index in 0..3) result[4 + index] = (value ushr (index * 8)).toByte()
-        System.arraycopy(payload, 0, result, 8, payload.size)
+        if (length > 0) {
+            System.arraycopy(payload, offset, result, 8, length)
+        }
         return result
     }
 }

@@ -74,7 +74,17 @@ class MainActivity : ComponentActivity() {
                         }
 
                         composable("provisioning") {
-                            ProvisioningScreen(viewModel = viewModel)
+                            ProvisioningScreen(
+                                viewModel = viewModel,
+                                onBack = {
+                                    navController.popBackStack()
+                                },
+                                onDone = {
+                                    navController.navigate("add_r1") {
+                                        popUpTo("add_r1") { inclusive = true }
+                                    }
+                                }
+                            )
                         }
                     }
                 }

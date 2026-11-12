@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
+import android.os.Build
+import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -20,7 +22,7 @@ class WifiScanner(private val context: Context) {
             context,
             Manifest.permission.ACCESS_COARSE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
-        return fine || coarse
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) fine else (fine || coarse)
     }
 
     suspend fun scan(): List<WifiNetwork> = withContext(Dispatchers.IO) {
@@ -31,6 +33,17 @@ class WifiScanner(private val context: Context) {
         val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             ?: return@withContext emptyList()
 
+        if (!wifiManager.isWifiEnabled) {
+            return@withContext emptyList()
+        }
+
+        // Kích hoạt quét ngầm để làm mới bộ đệm nếu hệ thống cho phép
+        @Suppress("DEPRECATION")
+        val scanStarted = runCatching { wifiManager.startScan() }.getOrDefault(false)
+        if (!scanStarted) {
+            Log.d(TAG, "startScan bị throttle hoặc không khả dụng; sử dụng kết quả quét có sẵn trong hệ thống")
+        }
+
         @Suppress("DEPRECATION")
         val scanResults = try {
             wifiManager.scanResults.orEmpty()
@@ -40,7 +53,8 @@ class WifiScanner(private val context: Context) {
 
         scanResults
             .mapNotNull { result ->
-                val ssid = result.SSID ?: return@mapNotNull null
+                val rawSsid = result.SSID ?: return@mapNotNull null
+                val ssid = rawSsid.removeSurrounding("\"").trim()
 
                 if (ssid.isBlank() || ssid == "<unknown ssid>" || ssid.contains("\u0000")) {
                     return@mapNotNull null
@@ -64,12 +78,16 @@ class WifiScanner(private val context: Context) {
     private fun parseSecurity(capabilities: String?): String {
         if (capabilities.isNullOrEmpty()) return "OPEN"
         val caps = capabilities.uppercase()
+        // Nhận diện chuẩn WEP riêng biệt (chuẩn bảo mật cũ lỗi thời)
+        // Các chuẩn WPA/WPA2/WPA3 (Transition Mode) được map về WPA2 để tương thích với phần cứng loa R1
         return when {
-            caps.contains("WPA3") || caps.contains("SAE") -> "WPA3"
-            caps.contains("WPA2") || caps.contains("RSN") -> "WPA2"
-            caps.contains("WPA") -> "WPA"
             caps.contains("WEP") -> "WEP"
+            caps.contains("WPA") || caps.contains("RSN") || caps.contains("SAE") -> "WPA2"
             else -> "OPEN"
         }
+    }
+
+    companion object {
+        private const val TAG = "WifiScanner"
     }
 }

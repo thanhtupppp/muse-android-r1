@@ -120,7 +120,12 @@ fun AddR1Screen(
 
             Button(
                 onClick = {
-                    viewModel.downloadAgentApk(apkUrl.trim())
+                    val url = apkUrl.trim()
+                    if (url.startsWith("https://")) {
+                        viewModel.downloadAgentApk(url)
+                    } else {
+                        Toast.makeText(context, "URL APK phải bắt đầu bằng https://", Toast.LENGTH_SHORT).show()
+                    }
                 },
                 enabled = !viewModel.isInstalling && !viewModel.isDownloading,
                 modifier = Modifier.fillMaxWidth()
@@ -158,7 +163,10 @@ fun AddR1Screen(
 
             OutlinedTextField(
                 value = speakerIp,
-                onValueChange = { speakerIp = it },
+                onValueChange = {
+                    speakerIp = it
+                    viewModel.setSpeakerIp(it.trim())
+                },
                 label = { Text("Địa chỉ loa") },
                 singleLine = true,
                 enabled = !viewModel.isInstalling,
@@ -169,8 +177,14 @@ fun AddR1Screen(
 
             Button(
                 onClick = {
-                    viewModel.setSpeakerIp(speakerIp.trim())
-                    viewModel.installR1Agent(apkUrl.trim())
+                    val ip = speakerIp.trim()
+                    val url = apkUrl.trim()
+                    viewModel.setSpeakerIp(ip)
+                    if (viewModel.hasLocalApk() || url.startsWith("https://")) {
+                        viewModel.installR1Agent(url)
+                    } else {
+                        Toast.makeText(context, "URL APK phải bắt đầu bằng https://", Toast.LENGTH_SHORT).show()
+                    }
                 },
                 enabled = !viewModel.isInstalling && !viewModel.isDownloading,
                 modifier = Modifier.fillMaxWidth()

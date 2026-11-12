@@ -65,7 +65,8 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     var wifiNetworks by mutableStateOf<List<WifiNetwork>>(emptyList())
         private set
 
-    private var selectedNetwork: WifiNetwork? = null
+    var selectedNetwork by mutableStateOf<WifiNetwork?>(null)
+        private set
     private var speakerIp = "192.168.43.1"
     private var password = ""
     private var bluetoothDevice: BluetoothDevice? = null
@@ -98,6 +99,12 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
 
     fun setPassword(value: String) {
         password = value
+    }
+
+    private var expectedApkSha256: String? = null
+
+    fun setExpectedApkSha256(hash: String?) {
+        expectedApkSha256 = hash?.trim()?.takeIf { it.isNotEmpty() }
     }
 
     fun selectWifiNetwork(network: WifiNetwork) {
@@ -178,14 +185,14 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         val network = selectedNetwork
 
         if (network == null) {
-            state = ProvisioningState.Failure("Chưa chọn Wi‑Fi nhà")
+            state = ProvisioningState.Failure("Chưa chọn Wi‑Fi nhà", code = "NO_WIFI_SELECTED")
             return
         }
 
         val isOpen = network.isOpen
         val isHexPsk = password.length == 64 && password.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
         if (!isOpen && (password.length !in 8..63 && !isHexPsk)) {
-            state = ProvisioningState.Failure("Mật khẩu WPA2 cần từ 8 đến 63 ký tự hoặc khóa hex 64 ký tự")
+            state = ProvisioningState.Failure("Mật khẩu WPA2 cần từ 8 đến 63 ký tự hoặc khóa hex 64 ký tự", code = "INVALID_PASSWORD")
             return
         }
 
@@ -194,7 +201,8 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
 
             val device = bluetoothDevice ?: bluetoothProvisioner.findR1Device().getOrElse {
                 state = ProvisioningState.Failure(
-                    it.message ?: "Chưa chọn Muse R1 qua Bluetooth"
+                    it.message ?: "Chưa chọn Muse R1 qua Bluetooth",
+                    code = "BLUETOOTH_NOT_FOUND"
                 )
                 return@launch
             }
@@ -264,16 +272,21 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         }
 
         state = ProvisioningState.Failure(
-            if (bluetoothError == null) {
+            message = if (bluetoothError == null) {
                 "Không tìm thấy R1 trên Wi‑Fi nhà sau 2 phút. Hãy kết nối điện thoại vào Wi‑Fi nhà rồi thử lại."
             } else {
                 "Không nhận được xác nhận Bluetooth và cũng không tìm thấy R1 trên Wi‑Fi nhà. Bluetooth: $bluetoothError. Hãy kết nối điện thoại vào Wi‑Fi nhà rồi xác minh lại."
-            }
+            },
+            code = if (bluetoothError == null) "DISCOVERY_TIMEOUT" else "BLUETOOTH_TIMEOUT"
         )
     }
 
-    fun retry() {
+    fun retry(resetNetwork: Boolean = false) {
         state = ProvisioningState.Idle
+        if (resetNetwork) {
+            selectedNetwork = null
+            password = ""
+        }
         status = "Sẵn sàng thử lại."
     }
 
@@ -284,7 +297,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         viewModelScope.launch {
             try {
                 status = "Bắt đầu tải APK từ: $apkUrl"
-                installer.downloadAgentApk(apkUrl) { percent ->
+                installer.downloadAgentApk(apkUrl, expectedSha256 = expectedApkSha256) { percent ->
                     downloadProgress = percent
                     status = "Đang tải APK: $percent%"
                 }.onSuccess { file ->
@@ -323,7 +336,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                     status = logMsg
                     addInstallLog(logMsg)
                     isDownloading = true
-                    val downloadResult = installer.downloadAgentApk(apkUrl) { percent ->
+                    val downloadResult = installer.downloadAgentApk(apkUrl, expectedSha256 = expectedApkSha256) { percent ->
                         downloadProgress = percent
                         installStage = "Đang tải APK về máy: $percent%"
                     }
@@ -346,7 +359,8 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                 status = "Đang kết nối ADB tới R1 ($speakerIp:5555)..."
                 val result = installer.installAgent(
                     speakerIp = speakerIp,
-                    apkFile = localApk
+                    apkFile = localApk,
+                    expectedSha256 = expectedApkSha256
                 ) { message, progress ->
                     installStage = message
                     installProgress = progress

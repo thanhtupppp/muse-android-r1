@@ -7,5 +7,5 @@ sealed class ProvisioningState {
     data object Provisioning : ProvisioningState()
     data object WaitingForR1 : ProvisioningState()
     data class Success(val ip: String) : ProvisioningState()
-    data class Failure(val message: String) : ProvisioningState()
+    data class Failure(val message: String, val code: String? = null) : ProvisioningState()
 }

@@ -66,7 +66,8 @@ fun BluetoothPairingScreen(
                         devices.none { it.address == device.address }
                     ) {
                         devices.add(device)
-                        status = "Đã tìm thấy ${device.name}. Chọn thiết bị để tiếp tục."
+                        val name = device.name ?: "Phicomm R1"
+                        status = "Đã tìm thấy $name. Chọn thiết bị để tiếp tục."
                     }
                 }
             }
@@ -90,10 +91,11 @@ fun BluetoothPairingScreen(
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
-        if (grants.values.all { it }) {
-            status = "Đã cấp quyền. Bấm Quét thiết bị."
+        val missing = grants.filterValues { !it }.keys
+        status = if (missing.isEmpty()) {
+            "Đã cấp quyền. Bấm Quét thiết bị."
         } else {
-            status = "Cần cấp quyền Bluetooth và vị trí để quét loa."
+            "Cần cấp đủ quyền Bluetooth và vị trí để quét loa."
         }
     }
 
