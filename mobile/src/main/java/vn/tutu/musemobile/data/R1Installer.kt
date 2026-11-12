@@ -2,85 +2,75 @@ package vn.tutu.musemobile.data
 
 import android.content.Context
 import android.util.Base64
-import android.util.Log
 import com.tananaev.adblib.AdbBase64
 import com.tananaev.adblib.AdbConnection
 import com.tananaev.adblib.AdbCrypto
 import com.tananaev.adblib.AdbStream
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.TimeUnit
 
-class R1Installer(
-    private val context: Context
-) {
+class R1Installer(private val context: Context) {
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .build()
+        .readTimeout(60, TimeUnit.SECONDS).build()
 
-    fun getLocalApkFile(): File {
-        return File(context.filesDir, "muse_r1_agent.apk")
-    }
-
-    fun hasLocalApk(): Boolean {
-        val file = getLocalApkFile()
-        return file.exists() && file.length() > 50_000
-    }
+    fun getLocalApkFile() = File(context.filesDir, "muse_r1_agent.apk")
+    fun hasLocalApk() = getLocalApkFile().let { it.isFile && it.length() > 50_000 }
 
     suspend fun downloadAgentApk(
         apkUrl: String,
         onProgress: (Int) -> Unit = {}
     ): Result<File> = withContext(Dispatchers.IO) {
-        runCatching {
-            val request = Request.Builder()
-                .url(apkUrl)
-                .build()
-            httpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    throw IOException("Tải APK thất bại: HTTP ${response.code}")
-                }
-                val body = response.body ?: throw IOException("APK response trống")
-                val total = body.contentLength()
-                val targetFile = getLocalApkFile()
-                val tempFile = File(context.filesDir, "muse_r1_agent.apk.tmp")
-                tempFile.outputStream().use { output ->
-                    body.byteStream().use { input ->
-                        val buffer = ByteArray(8192)
-                        var read: Int
-                        var downloaded = 0L
-                        var lastReportedPercent = -1
-                        while (input.read(buffer).also { read = it } != -1) {
-                            output.write(buffer, 0, read)
-                            downloaded += read
-                            if (total > 0) {
-                                val percent = ((downloaded * 100) / total).toInt()
-                                if (percent != lastReportedPercent) {
-                                    lastReportedPercent = percent
-                                    onProgress(percent)
+        try {
+            val target = getLocalApkFile()
+            val temp = File(context.filesDir, "muse_r1_agent.apk.tmp")
+            try {
+                httpClient.newCall(Request.Builder().url(apkUrl).build()).execute().use { response ->
+                    if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
+                    val body = response.body ?: throw IOException("APK response trống")
+                    val total = body.contentLength()
+                    var downloaded = 0L
+                    var last = -1
+                    temp.outputStream().use { output ->
+                        body.byteStream().use { input ->
+                            val buffer = ByteArray(8192)
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                output.write(buffer, 0, count)
+                                downloaded += count
+                                if (total > 0) {
+                                    val percent = ((downloaded * 100) / total).toInt()
+                                    if (percent != last) { last = percent; onProgress(percent) }
                                 }
                             }
                         }
-                        output.flush()
+                    }
+                    if (downloaded < 50_000 || (total >= 0 && downloaded != total)) {
+                        throw IOException("APK tải về không đầy đủ")
+                    }
+                    if (context.packageManager.getPackageArchiveInfo(temp.absolutePath, 0)
+                            ?.packageName != "vn.tutu.muser1") {
+                        throw IOException("File tải về không phải APK Muse R1 Agent")
                     }
                 }
-                if (targetFile.exists()) {
-                    targetFile.delete()
+                if (!temp.renameTo(target)) {
+                    throw IOException("Không thể thay thế APK offline; giữ nguyên bản cũ")
                 }
-                if (!tempFile.renameTo(targetFile)) {
-                    tempFile.copyTo(targetFile, overwrite = true)
-                    tempFile.delete()
-                }
-                targetFile
-            }
-        }
+                Result.success(target)
+            } finally { temp.delete() }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { Result.failure(e) }
     }
 
     suspend fun installAgent(
@@ -88,269 +78,168 @@ class R1Installer(
         apkFile: File,
         onProgress: (message: String, progress: Float?) -> Unit = { _, _ -> }
     ): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
-            if (!apkFile.exists() || apkFile.length() < 50_000) {
-                throw IOException("File APK không hợp lệ hoặc kích thước quá nhỏ (${apkFile.length()} bytes)")
-            }
-            val apkSizeMb = String.format("%.2f MB", apkFile.length() / (1024.0 * 1024.0))
-
+        try {
+            require(apkFile.isFile && apkFile.length() > 50_000) { "APK offline không hợp lệ" }
             val host = speakerIp.trim()
-            val port = 5555
-            val remotePath = "/data/local/tmp/muse_r1_agent.apk"
-
-            onProgress("1/5: Đang kết nối TCP tới loa R1 ($host:$port)...", 0.05f)
-
-            var (currentSocket, currentConnection) = try {
-                openConnection(host, port)
-            } catch (e: Exception) {
-                throw IOException(
-                    "Không thể kết nối đến $host:$port (${e.message ?: "timeout"}). " +
-                    "Hãy chắc chắn bạn đã kết nối Wi‑Fi vào 'Phicomm_R1_xxx' và loa đã bật cổng ADB 5555.",
-                    e
-                )
-            }
-
+            val path = "/data/local/tmp/muse_r1_agent.apk"
+            onProgress("1/5: Đang kết nối ADB $host:5555...", 0.05f)
+            val (socket, connection) = openConnection(host, 5555)
             try {
-                onProgress("2/5: Bắt tay xác thực ADB với loa R1 thành công!", 0.15f)
-
-                onProgress("3/5: Bắt đầu truyền APK ($apkSizeMb) lên $remotePath...", 0.20f)
-
-                pushApk(
-                    connection = currentConnection,
-                    apkFile = apkFile,
-                    remotePath = remotePath
-                ) { pushedBytes, totalBytes ->
-                    val fraction = pushedBytes.toFloat() / totalBytes.toFloat()
-                    val percent = (fraction * 100).toInt()
-                    val pushedMb = String.format("%.2f", pushedBytes / (1024.0 * 1024.0))
-                    val totalMb = String.format("%.2f", totalBytes / (1024.0 * 1024.0))
-                    val currentProgress = 0.20f + fraction * 0.55f
-                    onProgress("Đang đẩy file APK: $pushedMb / $totalMb MB ($percent%)", currentProgress)
+                onProgress("2/5: Đã bắt tay ADB. Đang truyền APK...", 0.15f)
+                pushApk(connection, apkFile, path) { pushed, total ->
+                    val fraction = pushed.toFloat() / total
+                    onProgress("3/5: Truyền APK ${(fraction * 100).toInt()}%", 0.20f + fraction * 0.55f)
                 }
+            } finally { closeQuietly(socket, connection) }
+            onProgress("Đã nhận Sync OKAY. Mở kết nối mới để kiểm tra shell...", 0.76f)
+            delay(800)
 
-                onProgress("Đã đẩy file APK thành công. Xác nhận kênh Sync OKAY...", 0.75f)
-
-                // Đóng sạch kết nối Sync để adbd giải phóng tài nguyên hoàn toàn
-                closeQuietly(currentSocket, currentConnection)
-                delay(800)
-
-                onProgress("4/5: Đang thực thi: pm install -r $remotePath... (Vui lòng đợi 5-15 giây)", 0.80f)
-
-                // Mở kết nối ADB mới sạch sẽ cho phiên chạy lệnh shell
-                val fresh = openConnection(host, port)
-                currentSocket = fresh.first
-                currentConnection = fresh.second
-
-                val installOutput = runShell(currentConnection, "pm install -r $remotePath")
-                Log.d("R1Installer", "Install output: $installOutput")
-
-                if (!installOutput.contains("Success", ignoreCase = true)) {
-                    throw IOException("Lệnh 'pm install' thất bại: ${installOutput.trim()}")
+            fun execute(command: String): String {
+                val errors = mutableListOf<String>()
+                for (service in listOf("shell:", "exec:")) {
+                    val (s, c) = openConnection(host, 5555)
+                    try {
+                        val stream = try { c.open(service + command) } catch (e: IOException) {
+                            errors += "$service ${e.message}"
+                            continue
+                        }
+                        return readShell(stream)
+                    } finally { closeQuietly(s, c) }
                 }
-                onProgress("Cài đặt APK thành công! (pm install: Success)", 0.90f)
-
-                onProgress("5/5: Đang khởi động Muse R1 Agent Service...", 0.95f)
-                val launchOutput = runShell(
-                    connection = currentConnection,
-                    command = "monkey -p vn.tutu.muser1 -c android.intent.category.LAUNCHER 1; am startservice vn.tutu.muser1/.AgentService"
-                )
-                Log.d("R1Installer", "Launch output: $launchOutput")
-
-                onProgress("Hoàn tất! Muse R1 Agent đã được cài đặt và khởi động trên loa.", 1.0f)
-            } finally {
-                closeQuietly(currentSocket, currentConnection)
+                throw IOException("R1 từ chối mở shell trên kết nối ADB mới: ${errors.joinToString("; ")}")
             }
-        }
+
+            val probe = execute("echo MUSE_SHELL_OK; if [ -s $path ]; then echo MUSE_APK_PRESENT; ls -l $path; fi")
+            onProgress("Kiểm tra shell/file: ${probe.take(600)}", 0.78f)
+            if (!probe.lineSequence().any { it.trim() == "MUSE_SHELL_OK" })
+                throw IOException("Chưa xác nhận được ADB shell: ${probe.take(600)}")
+            if (!probe.lineSequence().any { it.trim() == "MUSE_APK_PRESENT" })
+                throw IOException("Không tìm thấy APK đã truyền trên R1")
+
+            onProgress("4/5: Đang chạy pm install -r...", 0.80f)
+            val installed = execute("pm install -r $path")
+            onProgress("pm install: ${installed.take(1000)}", 0.90f)
+            if (!installed.lineSequence().any { it.trim() == "Success" })
+                throw IOException("pm install không trả Success: ${installed.take(1000)}")
+
+            onProgress("5/5: Đang khởi động Agent...", 0.95f)
+            val launched = execute("am startservice -n vn.tutu.muser1/.AgentService")
+            onProgress("Kết quả khởi động: ${launched.take(600)}", 0.97f)
+            if (listOf("Error", "Exception", "Permission Denial", "not found").any { launched.contains(it, true) })
+                throw IOException("APK đã cài nhưng không khởi động được Agent: ${launched.take(600)}")
+            val services = execute("dumpsys activity services vn.tutu.muser1")
+            if (!services.contains(".AgentService"))
+                throw IOException("APK đã cài nhưng chưa xác nhận AgentService đang chạy")
+            onProgress("Hoàn tất: đã cài APK và xác nhận AgentService đang chạy.", 1f)
+            Result.success(Unit)
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { Result.failure(e) }
     }
 
     private fun openConnection(host: String, port: Int): Pair<Socket, AdbConnection> {
-        val socket = Socket().apply {
-            connect(InetSocketAddress(host, port), 8_000)
-            soTimeout = 60_000
-            tcpNoDelay = true
-        }
-        val crypto = getOrCreateAdbCrypto()
-        val connection = AdbConnection.create(socket, crypto)
-        connection.connect()
-        return Pair(socket, connection)
+        val socket = Socket()
+        var connection: AdbConnection? = null
+        try {
+            socket.connect(InetSocketAddress(host, port), 8_000)
+            socket.soTimeout = 60_000
+            socket.tcpNoDelay = true
+            val created = AdbConnection.create(socket, getOrCreateAdbCrypto())
+            connection = created
+            created.connect()
+            return socket to created
+        } catch (e: Exception) { closeQuietly(socket, connection); throw e }
     }
 
     private fun closeQuietly(socket: Socket?, connection: AdbConnection?) {
-        try {
-            connection?.close()
-        } catch (_: Exception) {
-        }
-        try {
-            socket?.close()
-        } catch (_: Exception) {
-        }
+        try { connection?.close() } catch (_: Exception) {}
+        try { socket?.close() } catch (_: Exception) {}
     }
 
+    @Synchronized
     private fun getOrCreateAdbCrypto(): AdbCrypto {
-        val base64 = AdbBase64 { data ->
-            Base64.encodeToString(data, Base64.NO_WRAP)
-        }
-        val privKey = File(context.filesDir, "adbkey")
-        val pubKey = File(context.filesDir, "adbkey.pub")
-        return try {
-            if (privKey.exists() && pubKey.exists()) {
-                AdbCrypto.loadAdbKeyPair(base64, privKey, pubKey)
-            } else {
-                AdbCrypto.generateAdbKeyPair(base64).also {
-                    it.saveAdbKeyPair(privKey, pubKey)
-                }
-            }
-        } catch (e: Exception) {
-            Log.w("R1Installer", "Failed to load/save ADB key pair, generating transient key", e)
-            AdbCrypto.generateAdbKeyPair(base64)
+        val base64 = AdbBase64 { Base64.encodeToString(it, Base64.NO_WRAP) }
+        val privateKey = File(context.filesDir, "adbkey")
+        val publicKey = File(context.filesDir, "adbkey.pub")
+        return if (privateKey.exists() && publicKey.exists()) {
+            AdbCrypto.loadAdbKeyPair(base64, privateKey, publicKey)
+        } else {
+            AdbCrypto.generateAdbKeyPair(base64).also { it.saveAdbKeyPair(privateKey, publicKey) }
         }
     }
 
     private fun pushApk(
-        connection: AdbConnection,
-        apkFile: File,
-        remotePath: String,
-        onByteProgress: (pushed: Long, total: Long) -> Unit = { _, _ -> }
+        connection: AdbConnection, apkFile: File, remotePath: String,
+        onByteProgress: (Long, Long) -> Unit
     ) {
         val stream = connection.open("sync:")
         try {
-            val pathAndMode = "$remotePath,33188"
-            val pathBytes = pathAndMode.toByteArray(Charsets.UTF_8)
-            val sendHeader = ByteArray(8 + pathBytes.size)
-            writeString(sendHeader, 0, "SEND")
-            writeInt(sendHeader, 4, pathBytes.size)
-            System.arraycopy(pathBytes, 0, sendHeader, 8, pathBytes.size)
-            stream.write(sendHeader)
-
-            val totalBytes = apkFile.length()
-            var pushedBytes = 0L
-            var lastReportedPercent = -1
-
-            onByteProgress(0L, totalBytes)
-
+            val path = "$remotePath,33188".toByteArray(Charsets.UTF_8)
+            stream.write(packet("SEND", path.size, path))
+            var pushed = 0L
+            var last = -1
             apkFile.inputStream().use { input ->
                 val buffer = ByteArray(2048)
-                var read: Int
-                while (input.read(buffer).also { read = it } != -1) {
-                    val chunk = ByteArray(8 + read)
-                    writeString(chunk, 0, "DATA")
-                    writeInt(chunk, 4, read)
-                    System.arraycopy(buffer, 0, chunk, 8, read)
-                    stream.write(chunk)
-
-                    pushedBytes += read
-                    if (totalBytes > 0) {
-                        val percent = ((pushedBytes * 100) / totalBytes).toInt()
-                        if (percent != lastReportedPercent) {
-                            lastReportedPercent = percent
-                            onByteProgress(pushedBytes, totalBytes)
-                        }
-                    }
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    stream.write(packet("DATA", count, buffer.copyOf(count)))
+                    pushed += count
+                    val percent = ((pushed * 100) / apkFile.length()).toInt()
+                    if (percent != last) { last = percent; onByteProgress(pushed, apkFile.length()) }
                 }
             }
-
-            val done = ByteArray(8)
-            writeString(done, 0, "DONE")
-            writeInt(done, 4, (System.currentTimeMillis() / 1000).toInt())
-            stream.write(done)
-
+            stream.write(packet("DONE", (System.currentTimeMillis() / 1000).toInt()))
             readSyncResponse(stream)
-
-            // Gracefully terminate the sync service
-            try {
-                val quit = ByteArray(8)
-                writeString(quit, 0, "QUIT")
-                writeInt(quit, 4, 0)
-                stream.write(quit)
-            } catch (_: Exception) {
-            }
-        } finally {
-            try {
-                stream.close()
-            } catch (_: Exception) {
-            }
-        }
+            try { stream.write(packet("QUIT", 0)) } catch (_: IOException) {}
+        } finally { try { stream.close() } catch (_: Exception) {} }
     }
 
     private fun readSyncResponse(stream: AdbStream) {
-        val response = stream.read()
-        if (response.size < 4) {
-            throw IOException("Phản hồi sync không hợp lệ (size = ${response.size})")
-        }
-        val id = String(response, 0, 4, Charsets.US_ASCII)
-        if (id == "FAIL") {
-            val msg = if (response.size > 8) {
-                String(response, 8, response.size - 8, Charsets.UTF_8)
-            } else {
-                "lỗi không xác định"
+        val bytes = ByteArrayOutputStream()
+        fun requireBytes(count: Int) {
+            while (bytes.size() < count) {
+                val chunk = stream.read()
+                if (chunk.isEmpty()) throw IOException("Phản hồi sync bị ngắt")
+                bytes.write(chunk)
             }
-            throw IOException("ADB sync từ chối file: $msg")
         }
-        if (id != "OKAY") {
-            throw IOException("Phản hồi ADB sync không mong muốn: $id")
+        requireBytes(8)
+        val header = bytes.toByteArray()
+        val id = String(header, 0, 4, Charsets.US_ASCII)
+        val size = (header[4].toInt() and 255) or
+            ((header[5].toInt() and 255) shl 8) or
+            ((header[6].toInt() and 255) shl 16) or
+            ((header[7].toInt() and 255) shl 24)
+        when (id) {
+            "OKAY" -> if (size != 0) throw IOException("Sync OKAY có length không hợp lệ")
+            "FAIL" -> {
+                if (size !in 0..65536) throw IOException("Sync FAIL quá dài")
+                requireBytes(8 + size)
+                throw IOException("ADB sync: ${String(bytes.toByteArray(), 8, size, Charsets.UTF_8)}")
+            }
+            else -> throw IOException("Sync response không mong muốn: $id")
         }
     }
 
-    private fun runShell(
-        connection: AdbConnection,
-        command: String
-    ): String {
-        // Thử theo thứ tự:
-        // 1. exec:<cmd> (chạy trực tiếp raw pipe, không cần PTY /dev/ptmx - tránh lỗi rejected trên Android cũ)
-        // 2. shell:<cmd> (chạy qua subprocess PTY)
-        // 3. shell: (mở shell tương tác và gửi command\nexit\n vào stdin)
-        val targets = listOf("exec:$command", "shell:$command", "shell:")
-        var lastException: Exception? = null
-
-        for (target in targets) {
-            try {
-                val stream = connection.open(target)
-                val output = StringBuilder()
-                try {
-                    if (target == "shell:") {
-                        val inputCmd = "$command\nexit\n"
-                        stream.write(inputCmd.toByteArray(Charsets.UTF_8))
-                    }
-                    while (!stream.isClosed) {
-                        try {
-                            val buffer = stream.read()
-                            output.append(String(buffer, Charsets.UTF_8))
-                        } catch (_: Exception) {
-                            break
-                        }
-                    }
-                } finally {
-                    try {
-                        stream.close()
-                    } catch (_: Exception) {
-                    }
+    private fun readShell(stream: AdbStream): String {
+        val output = ByteArrayOutputStream()
+        try {
+            while (true) {
+                val bytes = try { stream.read() } catch (e: IOException) {
+                    if (stream.isClosed) break else throw e
                 }
-                return output.toString()
-            } catch (e: Exception) {
-                lastException = e
-                Log.w("R1Installer", "Target '$target' bị từ chối, thử phương thức tiếp theo...", e)
+                if (output.size() + bytes.size > 1_048_576) throw IOException("Shell output quá dài")
+                output.write(bytes)
             }
-        }
-        throw lastException ?: IOException("Lệnh không thể thực thi: $command")
+        } finally { try { stream.close() } catch (_: Exception) {} }
+        return String(output.toByteArray(), Charsets.UTF_8)
     }
 
-    private fun writeString(
-        target: ByteArray,
-        offset: Int,
-        value: String
-    ) {
-        val bytes = value.toByteArray(Charsets.US_ASCII)
-        System.arraycopy(bytes, 0, target, offset, bytes.size)
-    }
-
-    private fun writeInt(
-        target: ByteArray,
-        offset: Int,
-        value: Int
-    ) {
-        target[offset] = (value and 0xFF).toByte()
-        target[offset + 1] = ((value shr 8) and 0xFF).toByte()
-        target[offset + 2] = ((value shr 16) and 0xFF).toByte()
-        target[offset + 3] = ((value shr 24) and 0xFF).toByte()
+    private fun packet(id: String, value: Int, payload: ByteArray = byteArrayOf()): ByteArray {
+        val result = ByteArray(8 + payload.size)
+        System.arraycopy(id.toByteArray(Charsets.US_ASCII), 0, result, 0, 4)
+        for (index in 0..3) result[4 + index] = (value ushr (index * 8)).toByte()
+        System.arraycopy(payload, 0, result, 8, payload.size)
+        return result
     }
 }
