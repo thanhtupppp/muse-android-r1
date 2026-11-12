@@ -6,137 +6,56 @@ import android.net.wifi.WifiManager
 import android.util.Log
 
 object WifiProvisioner {
-
     private const val TAG = "MuseR1"
     private const val CONNECT_TIMEOUT_MS = 20_000L
     private const val CONNECT_POLL_INTERVAL_MS = 1_000L
 
-    fun connect(
-        context: Context,
-        ssid: String,
-        password: String
-    ): Boolean {
-        val wifiManager = context.applicationContext
-            .getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            ?: return false
-
-        return connectAndWait(
-            wifiManager = wifiManager,
-            ssid = ssid,
-            password = password
-        )
+    fun connect(context: Context, ssid: String, password: String): Boolean {
+        val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return false
+        return connectAndWait(manager, ssid, password)
     }
 
-    fun connect(
-        wifiManager: WifiManager,
-        ssid: String,
-        password: String
-    ): Boolean {
-        return connectAndWait(
-            wifiManager = wifiManager,
-            ssid = ssid,
-            password = password
-        )
-    }
+    fun connect(wifiManager: WifiManager, ssid: String, password: String): Boolean =
+        connectAndWait(wifiManager, ssid, password)
 
     @Suppress("DEPRECATION")
-    fun connectAndWait(
-        wifiManager: WifiManager,
-        ssid: String,
-        password: String
-    ): Boolean {
+    fun connectAndWait(wifiManager: WifiManager, ssid: String, password: String): Boolean {
         val cleanSsid = ssid.trim()
-
-        if (cleanSsid.isEmpty()) {
-            Log.w(TAG, "SSID is empty")
-            return false
-        }
-
-        if (password.length < 8) {
-            Log.w(TAG, "WPA2 password must contain at least 8 characters")
-            return false
-        }
-
+        if (cleanSsid.isEmpty() || password.length < 8) return false
         return try {
             val configuration = WifiConfiguration().apply {
                 SSID = "\"$cleanSsid\""
                 preSharedKey = "\"$password\""
             }
-
             var networkId = wifiManager.addNetwork(configuration)
-
             if (networkId == -1) {
-                val existingId = findExistingNetworkId(
-                    wifiManager,
-                    cleanSsid
-                )
-
-                if (existingId == -1) {
-                    Log.w(TAG, "Unable to add Wi‑Fi network")
-                    return false
-                }
-
-                networkId = existingId
-
-                val updated = wifiManager.updateNetwork(configuration)
-
-                if (updated == -1) {
-                    Log.w(TAG, "Unable to update existing Wi‑Fi network")
-                    return false
-                }
+                val existingId = findExistingNetworkId(wifiManager, cleanSsid)
+                if (existingId == -1) { Log.w(TAG, "Unable to add Wi-Fi network"); return false }
+                // updateNetwork() reads networkId from the WifiConfiguration object.
+                configuration.networkId = existingId
+                networkId = wifiManager.updateNetwork(configuration)
+                if (networkId == -1) { Log.w(TAG, "Unable to update existing Wi-Fi network"); return false }
             }
-
-            wifiManager.disconnect()
-            wifiManager.enableNetwork(networkId, true)
+            if (!wifiManager.enableNetwork(networkId, true)) { Log.w(TAG, "Unable to enable Wi-Fi network"); return false }
             wifiManager.saveConfiguration()
             wifiManager.reconnect()
-
-            waitForConnection(
-                wifiManager = wifiManager,
-                ssid = cleanSsid
-            )
-        } catch (error: Exception) {
-            Log.e(TAG, "Wi‑Fi provisioning failed", error)
-            false
-        }
+            waitForConnection(wifiManager, cleanSsid)
+        } catch (error: Exception) { Log.e(TAG, "Wi-Fi provisioning failed", error); false }
     }
-
     @Suppress("DEPRECATION")
-    private fun waitForConnection(
-        wifiManager: WifiManager,
-        ssid: String
-    ): Boolean {
-        val expectedSsid = "\"$ssid\""
+    private fun waitForConnection(wifiManager: WifiManager, ssid: String): Boolean {
+        val expected = "\"$ssid\""
         val deadline = System.currentTimeMillis() + CONNECT_TIMEOUT_MS
-
         while (System.currentTimeMillis() < deadline) {
-            val info = wifiManager.connectionInfo
-            val currentSsid = info?.ssid
-
-            if (currentSsid == expectedSsid) {
-                return true
-            }
-
+            if (wifiManager.connectionInfo?.ssid == expected) return true
             Thread.sleep(CONNECT_POLL_INTERVAL_MS)
         }
-
-        Log.w(TAG, "Wi‑Fi connection timed out")
+        Log.w(TAG, "Wi-Fi connection timed out")
         return false
     }
-
     @Suppress("DEPRECATION")
-    private fun findExistingNetworkId(
-        wifiManager: WifiManager,
-        ssid: String
-    ): Int {
-        val configuredNetworks = wifiManager.configuredNetworks
-            ?: return -1
-
-        return configuredNetworks
-            .firstOrNull {
-                it.SSID == "\"$ssid\""
-            }
-            ?.networkId
-            ?: -1
+    private fun findExistingNetworkId(wifiManager: WifiManager, ssid: String): Int {
+        val networks = wifiManager.configuredNetworks ?: return -1
+        return networks.firstOrNull { it.SSID == "\"$ssid\"" }?.networkId ?: -1
     }
 }
