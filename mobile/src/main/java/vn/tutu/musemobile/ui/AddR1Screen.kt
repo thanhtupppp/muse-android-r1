@@ -31,7 +31,7 @@ fun AddR1Screen(
 ) {
     var speakerIp by remember { mutableStateOf("192.168.43.1") }
     var apkUrl by remember {
-        mutableStateOf("https://your-server.com/muse_r1_agent.apk")
+        mutableStateOf("https://github.com/thanhtupppp/muse-android-r1/releases/download/v0.1.0/app-debug.apk")
     }
 
     Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
