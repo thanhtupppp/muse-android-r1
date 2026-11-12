@@ -8,17 +8,10 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 
-/**
- * Headless background agent cho Phicomm R1.
- *
- * Service này:
- * - Chạy local HTTP provisioning server cho Muse Mobile App.
- * - Giữ kết nối Muse session qua WebSocket.
- * - Gửi telemetry định kỳ.
- */
 class AgentService : Service() {
 
     private var provisionServer: LocalProvisionServer? = null
+    private var discoveryResponder: DiscoveryResponder? = null
     private var museSessionAdapter: MuseSessionAdapter? = null
     private var telemetryReporter: TelemetryReporter? = null
     private val handler = Handler(Looper.getMainLooper())
@@ -37,14 +30,19 @@ class AgentService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startProvisioningServer()
+        startDiscoveryResponder()
         startMuseSession()
         return START_STICKY
     }
 
     override fun onDestroy() {
         handler.removeCallbacks(telemetryTask)
+
         provisionServer?.stopServer()
         provisionServer = null
+
+        discoveryResponder?.stop()
+        discoveryResponder = null
 
         museSessionAdapter?.stop()
         museSessionAdapter = null
@@ -63,8 +61,19 @@ class AgentService : Service() {
         provisionServer = LocalProvisionServer(this)
 
         if (provisionServer?.startServer() == true) {
-            Log.i(TAG, "Provisioning server ready on port ${LocalProvisionServer.DEFAULT_PORT}")
+            Log.i(
+                TAG,
+                "Provisioning server ready on port ${LocalProvisionServer.DEFAULT_PORT}"
+            )
         }
+    }
+
+    private fun startDiscoveryResponder() {
+        if (discoveryResponder == null) {
+            discoveryResponder = DiscoveryResponder(this)
+        }
+
+        discoveryResponder?.start()
     }
 
     private fun startMuseSession() {
