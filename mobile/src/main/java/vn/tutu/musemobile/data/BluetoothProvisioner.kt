@@ -15,92 +15,45 @@ import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.util.UUID
 
-class BluetoothProvisioner(
-    private val context: Context
-) {
+class BluetoothProvisioner(private val context: Context) {
     companion object {
-        // UUID này phải khớp với Bluetooth server trong R1 Agent
         private val MUSE_R1_SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
         private const val DEVICE_NAME_PREFIX = "Muse R1"
+        private const val MAX_RESPONSE_BYTES = 1024
     }
-
-    private val bluetoothManager: BluetoothManager? =
-        context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-    private val bluetoothAdapter: BluetoothAdapter?
-        get() = bluetoothManager?.adapter
-
-    fun hasBluetoothPermissions(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.BLUETOOTH_CONNECT
-            ) == PackageManager.PERMISSION_GRANTED
-        } else {
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.BLUETOOTH
-            ) == PackageManager.PERMISSION_GRANTED &&
-                    ContextCompat.checkSelfPermission(
-                        context,
-                        Manifest.permission.BLUETOOTH_ADMIN
-                    ) == PackageManager.PERMISSION_GRANTED
-        }
+    private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+    private val bluetoothAdapter: BluetoothAdapter? get() = bluetoothManager?.adapter
+    fun hasBluetoothPermissions(): Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+    } else {
+        ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH) == PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_ADMIN) == PackageManager.PERMISSION_GRANTED
     }
-
     @SuppressLint("MissingPermission")
     fun getBondedR1Devices(): List<BluetoothDevice> {
         val adapter = bluetoothAdapter ?: return emptyList()
-
-        if (!adapter.isEnabled) {
-            return emptyList()
-        }
-
-        return adapter.bondedDevices
-            ?.filter {
-                it.name?.startsWith(DEVICE_NAME_PREFIX) == true
-            }
-            ?: emptyList()
+        if (!adapter.isEnabled) return emptyList()
+        return adapter.bondedDevices?.filter { it.name?.startsWith(DEVICE_NAME_PREFIX) == true } ?: emptyList()
     }
-
     @SuppressLint("MissingPermission")
-    suspend fun findR1Device(): Result<BluetoothDevice> = withContext(Dispatchers.IO) {
-        runCatching {
-            val adapter = bluetoothAdapter ?: throw IOException("Thiết bị không hỗ trợ Bluetooth")
-            if (!adapter.isEnabled) {
-                throw IOException("Bluetooth đang tắt")
-            }
-
-            val bonded = adapter.bondedDevices ?: throw IOException("Không đọc được danh sách Bluetooth")
-            val device = bonded.firstOrNull { it.name?.startsWith(DEVICE_NAME_PREFIX) == true }
-                ?: throw IOException(
-                    "Không tìm thấy Muse R1. Hãy bật Bluetooth trên loa và ghép thiết bị."
-                )
-            device
-        }
-    }
-
+    suspend fun findR1Device(): Result<BluetoothDevice> = withContext(Dispatchers.IO) { runCatching {
+        val adapter = bluetoothAdapter ?: throw IOException("Thiết bị không hỗ trợ Bluetooth")
+        if (!adapter.isEnabled) throw IOException("Bluetooth đang tắt")
+        val bonded = adapter.bondedDevices ?: throw IOException("Không đọc được danh sách Bluetooth")
+        bonded.firstOrNull { it.name?.startsWith(DEVICE_NAME_PREFIX) == true }
+            ?: throw IOException("Không tìm thấy Muse R1. Hãy bật Bluetooth trên loa và ghép thiết bị.")
+    } }
     @SuppressLint("MissingPermission")
-    suspend fun provisionWifi(
-        device: BluetoothDevice,
-        ssid: String,
-        password: String
-    ): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
-            val socket = device.createRfcommSocketToServiceRecord(MUSE_R1_SPP_UUID)
-            socket.use { connection ->
-                connection.connect()
-                sendProvisionPayload(connection, ssid, password)
-                readResponse(connection)
-                Unit
-            }
+    suspend fun provisionWifi(device: BluetoothDevice, ssid: String, password: String): Result<Unit> = withContext(Dispatchers.IO) { runCatching {
+        require(ssid.isNotBlank()) { "SSID không được để trống" }
+        require(password.length >= 8) { "Mật khẩu WPA2 cần ít nhất 8 ký tự" }
+        device.createRfcommSocketToServiceRecord(MUSE_R1_SPP_UUID).use { socket ->
+            socket.connect()
+            sendProvisionPayload(socket, ssid, password)
+            readResponse(socket)
         }
-    }
-
-    private fun sendProvisionPayload(
-        socket: BluetoothSocket,
-        ssid: String,
-        password: String
-    ) {
+    } }
+    private fun sendProvisionPayload(socket: BluetoothSocket, ssid: String, password: String) {
         val payload = buildString {
             append("MUSE_WIFI_CONFIG\n")
             append("ssid=").append(ssid).append("\n")
@@ -108,30 +61,22 @@ class BluetoothProvisioner(
             append("security=WPA2\n")
             append("END\n")
         }
-        val output = socket.outputStream
-        output.write(payload.toByteArray(Charsets.UTF_8))
-        output.flush()
+        socket.outputStream.apply { write(payload.toByteArray(Charsets.UTF_8)); flush() }
     }
-
-    private fun readResponse(
-        socket: BluetoothSocket
-    ): String {
-        val response = StringBuilder()
+    // Server replies with one newline-terminated OK or ERROR line. EOF is never success.
+    private fun readResponse(socket: BluetoothSocket) {
         val input = socket.inputStream
-        val buffer = ByteArray(1024)
-        var read: Int
-        while (input.read(buffer).also { read = it } != -1) {
-            response.append(String(buffer, 0, read, Charsets.UTF_8))
-            if (response.contains("OK") || response.contains("ERROR")) {
-                break
-            }
+        val response = StringBuilder()
+        while (response.length < MAX_RESPONSE_BYTES) {
+            val next = input.read()
+            if (next == -1) throw IOException("R1 đóng Bluetooth trước khi xác nhận cấu hình Wi-Fi")
+            if (next == 10) break
+            if (next != 13) response.append(next.toChar())
         }
-
-        val result = response.toString()
-        if (result.contains("ERROR", ignoreCase = true)) {
-            throw IOException("R1 từ chối cấu hình Wi‑Fi: $result")
-        }
-        return result
+        if (response.length >= MAX_RESPONSE_BYTES) throw IOException("Phản hồi Bluetooth từ R1 vượt giới hạn")
+        val line = response.toString().trim()
+        if (line == "OK") return
+        if (line.startsWith("ERROR:", ignoreCase = true)) throw IOException("R1 từ chối cấu hình Wi-Fi: $line")
+        throw IOException("Phản hồi Bluetooth không hợp lệ từ R1: ${line.ifEmpty { "<trống>" }}")
     }
 }
-
