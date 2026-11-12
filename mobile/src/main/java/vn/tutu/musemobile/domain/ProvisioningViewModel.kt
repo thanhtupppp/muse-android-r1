@@ -30,6 +30,11 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     var status by mutableStateOf("Nhập địa chỉ R1 rồi kiểm tra kết nối.")
         private set
 
+    var isApkDownloaded by mutableStateOf(installer.hasLocalApk())
+        private set
+
+    fun hasLocalApk(): Boolean = installer.hasLocalApk()
+
     var wifiNetworks by mutableStateOf<List<WifiNetwork>>(emptyList())
         private set
 
@@ -161,23 +166,49 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         status = "Sẵn sàng thử lại."
     }
 
+    fun downloadAgentApk(apkUrl: String) {
+        viewModelScope.launch {
+            status = "Bắt đầu tải APK từ: $apkUrl"
+            installer.downloadAgentApk(apkUrl) { percent ->
+                status = "Đang tải APK: $percent%"
+            }.onSuccess { file ->
+                isApkDownloaded = true
+                val sizeMb = String.format("%.2f", file.length() / (1024.0 * 1024.0))
+                status = "Đã lưu APK ($sizeMb MB) vào máy! Hãy đổi Wi‑Fi sang Phicomm_R1_xxx rồi bấm Cài APK."
+            }.onFailure { error ->
+                status = "Tải APK thất bại: ${error.message}. Hãy kiểm tra Internet (Wi‑Fi nhà / 4G) hoặc URL."
+            }
+        }
+    }
+
     fun installR1Agent(apkUrl: String) {
         viewModelScope.launch {
-            status = "Bắt đầu tải Agent APK..."
-            installer.downloadAgentApk(apkUrl) { percent ->
-                status = "Đang tải Agent: $percent%"
-            }.onSuccess { apkFile ->
-                status = "Đang cài Agent lên R1 qua ADB..."
-                installer.installAgent(
-                    speakerIp = speakerIp,
-                    apkFile = apkFile
-                ) { message ->
-                    status = message
-                }.onFailure { error ->
-                    status = "Lỗi cài Agent: ${error.message}"
+            val localApk = if (installer.hasLocalApk()) {
+                val file = installer.getLocalApkFile()
+                val sizeMb = String.format("%.2f", file.length() / (1024.0 * 1024.0))
+                status = "Sử dụng file APK offline có sẵn ($sizeMb MB)..."
+                file
+            } else {
+                status = "Chưa có file APK offline. Đang tải từ URL..."
+                val downloadResult = installer.downloadAgentApk(apkUrl) { percent ->
+                    status = "Đang tải APK: $percent%"
                 }
+                if (downloadResult.isFailure) {
+                    status = "Không thể tải APK (do mất mạng khi kết nối Wi‑Fi R1). Hãy kết nối lại Wi‑Fi nhà hoặc 4G rồi bấm 'Tải APK về máy' trước!"
+                    return@launch
+                }
+                isApkDownloaded = true
+                downloadResult.getOrThrow()
+            }
+
+            status = "Đang kết nối ADB tới R1 ($speakerIp:5555)..."
+            installer.installAgent(
+                speakerIp = speakerIp,
+                apkFile = localApk
+            ) { message ->
+                status = message
             }.onFailure { error ->
-                status = "Lỗi tải APK: ${error.message}"
+                status = "Lỗi cài Agent qua ADB: ${error.message}"
             }
         }
     }

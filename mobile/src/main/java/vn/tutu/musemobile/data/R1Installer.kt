@@ -25,6 +25,15 @@ class R1Installer(
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
+    fun getLocalApkFile(): File {
+        return File(context.filesDir, "muse_r1_agent.apk")
+    }
+
+    fun hasLocalApk(): Boolean {
+        val file = getLocalApkFile()
+        return file.exists() && file.length() > 50_000
+    }
+
     suspend fun downloadAgentApk(
         apkUrl: String,
         onProgress: (Int) -> Unit = {}
@@ -39,11 +48,9 @@ class R1Installer(
                 }
                 val body = response.body ?: throw IOException("APK response trống")
                 val total = body.contentLength()
-                val file = File(
-                    context.cacheDir,
-                    "muse_r1_agent.apk"
-                )
-                file.outputStream().use { output ->
+                val targetFile = getLocalApkFile()
+                val tempFile = File(context.filesDir, "muse_r1_agent.apk.tmp")
+                tempFile.outputStream().use { output ->
                     body.byteStream().use { input ->
                         val buffer = ByteArray(8192)
                         var read: Int
@@ -59,7 +66,14 @@ class R1Installer(
                         output.flush()
                     }
                 }
-                file
+                if (targetFile.exists()) {
+                    targetFile.delete()
+                }
+                if (!tempFile.renameTo(targetFile)) {
+                    tempFile.copyTo(targetFile, overwrite = true)
+                    tempFile.delete()
+                }
+                targetFile
             }
         }
     }

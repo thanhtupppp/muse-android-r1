@@ -50,22 +50,13 @@ fun AddR1Screen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            Text("1. Giữ nút tròn trên loa khoảng 6 giây.")
-            Text("2. Kết nối Wi‑Fi Phicomm_R1_xxx.")
-            Text("3. Cài Muse R1 Agent qua ADB.")
-            Text("4. Chọn Wi‑Fi nhà và gửi cấu hình qua Bluetooth.")
+            Text("1. Kết nối Wi‑Fi nhà hoặc 4G, bấm 'Tải APK về máy'.")
+            Text("2. Giữ nút tròn trên loa R1 ~6 giây để mở hotspot.")
+            Text("3. Đổi Wi‑Fi điện thoại sang Phicomm_R1_xxx.")
+            Text("4. Bấm 'Cài APK lên R1 qua ADB' (không cần internet).")
+            Text("5. Chọn Wi‑Fi nhà và truyền qua Bluetooth.")
 
-            Spacer(modifier = Modifier.height(24.dp))
-
-            OutlinedTextField(
-                value = speakerIp,
-                onValueChange = { speakerIp = it },
-                label = { Text("Địa chỉ loa") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
             OutlinedTextField(
                 value = apkUrl,
@@ -75,7 +66,33 @@ fun AddR1Screen(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Button(
+                onClick = {
+                    viewModel.downloadAgentApk(apkUrl.trim())
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    if (viewModel.isApkDownloaded)
+                        "1. Tải lại APK về máy (Đã có sẵn file ✔️)"
+                    else
+                        "1. Tải APK về máy (khi có Internet)"
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            OutlinedTextField(
+                value = speakerIp,
+                onValueChange = { speakerIp = it },
+                label = { Text("Địa chỉ loa") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
 
             Button(
                 onClick = {
@@ -84,7 +101,7 @@ fun AddR1Screen(
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Cài Muse R1 Agent qua ADB")
+                Text("2. Cài APK lên R1 qua ADB")
             }
 
             Spacer(modifier = Modifier.height(12.dp))
