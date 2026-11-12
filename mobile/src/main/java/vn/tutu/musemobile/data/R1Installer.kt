@@ -8,7 +8,6 @@ import com.tananaev.adblib.AdbCrypto
 import com.tananaev.adblib.AdbStream
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -17,6 +16,7 @@ import java.io.File
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 class R1Installer(private val context: Context) {
@@ -29,9 +29,11 @@ class R1Installer(private val context: Context) {
 
     suspend fun downloadAgentApk(
         apkUrl: String,
+        expectedSha256: String? = null,
         onProgress: (Int) -> Unit = {}
     ): Result<File> = withContext(Dispatchers.IO) {
         try {
+            require(apkUrl.startsWith("https://")) { "APK URL phải dùng HTTPS" }
             val target = getLocalApkFile()
             val temp = File(context.filesDir, "muse_r1_agent.apk.tmp")
             try {
@@ -63,6 +65,9 @@ class R1Installer(private val context: Context) {
                             ?.packageName != "vn.tutu.muser1") {
                         throw IOException("File tải về không phải APK Muse R1 Agent")
                     }
+                    if (expectedSha256 != null && !verifyApkHash(temp, expectedSha256)) {
+                        throw IOException("SHA-256 của APK không khớp")
+                    }
                 }
                 if (!temp.renameTo(target)) {
                     throw IOException("Không thể thay thế APK offline; giữ nguyên bản cũ")
@@ -76,11 +81,16 @@ class R1Installer(private val context: Context) {
     suspend fun installAgent(
         speakerIp: String,
         apkFile: File,
+        expectedSha256: String? = null,
         onProgress: (message: String, progress: Float?) -> Unit = { _, _ -> }
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             require(apkFile.isFile && apkFile.length() > 50_000) { "APK offline không hợp lệ" }
+            if (expectedSha256 != null && !verifyApkHash(apkFile, expectedSha256)) {
+                throw IOException("SHA-256 của APK không khớp")
+            }
             val host = speakerIp.trim()
+            require(isValidIpv4(host)) { "Địa chỉ IP không hợp lệ: $host" }
             val path = "/data/local/tmp/muse_r1_agent.apk"
             onProgress("1/5: Đang kết nối ADB $host:5555...", 0.05f)
             val (socket, connection) = openConnection(host, 5555)
@@ -92,8 +102,6 @@ class R1Installer(private val context: Context) {
                 }
                 onProgress("Đã nhận Sync OKAY. Giữ kết nối ADB hiện tại để chạy shell...", 0.76f)
 
-                // R1 firmware accepts the first shell stream but rejects subsequent
-                // shell streams. Run the complete install flow in one shell session.
                 val command = """
                     echo MUSE_SHELL_OK
                     if [ ! -s $path ]; then
@@ -148,17 +156,14 @@ class R1Installer(private val context: Context) {
         catch (e: Exception) { Result.failure(e) }
     }
 
-
-    /**
-     * Collects device-side diagnostics over the authorized ADB transport.
-     * The TCP probe is performed by the phone; remaining commands run on R1.
-     */
     suspend fun diagnoseAgent(speakerIp: String): Result<String> = withContext(Dispatchers.IO) {
         val report = StringBuilder()
         try {
+            val host = speakerIp.trim()
+            require(isValidIpv4(host)) { "Địa chỉ IP không hợp lệ: $host" }
             val probe = try {
                 Socket().use { probeSocket ->
-                    probeSocket.connect(InetSocketAddress(speakerIp.trim(), 8080), 2_500)
+                    probeSocket.connect(InetSocketAddress(host, 8080), 2_500)
                     "CONNECTED"
                 }
             } catch (error: Exception) {
@@ -166,7 +171,7 @@ class R1Installer(private val context: Context) {
             }
             report.append("=== PHONE TCP PROBE :8080 ===\n").append(probe).append("\n")
 
-            val (socket, connection) = openConnection(speakerIp.trim(), 5555)
+            val (socket, connection) = openConnection(host, 5555)
             try {
                 val command = """
                     echo ===MUSE_DIAG_SERVICE===
@@ -193,6 +198,24 @@ class R1Installer(private val context: Context) {
                 .append(error.message ?: "no details")
             Result.success(report.toString())
         }
+    }
+
+    private fun isValidIpv4(ip: String): Boolean {
+        val regex = Regex("^(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)(\\.(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3}$")
+        return regex.matches(ip)
+    }
+
+    private fun verifyApkHash(file: File, expectedSha256: String): Boolean {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val hash = file.inputStream().use { input ->
+            val buffer = ByteArray(8192)
+            var read: Int
+            while (input.read(buffer).also { read = it } != -1) {
+                digest.update(buffer, 0, read)
+            }
+            digest.digest().joinToString("") { "%02x".format(it) }
+        }
+        return hash.equals(expectedSha256.trim().lowercase(), ignoreCase = false)
     }
 
     private fun openConnection(host: String, port: Int): Pair<Socket, AdbConnection> {
@@ -237,7 +260,7 @@ class R1Installer(private val context: Context) {
             var pushed = 0L
             var last = -1
             apkFile.inputStream().use { input ->
-                val buffer = ByteArray(2048)
+                val buffer = ByteArray(8192)
                 while (true) {
                     val count = input.read(buffer)
                     if (count < 0) break
@@ -280,16 +303,18 @@ class R1Installer(private val context: Context) {
         }
     }
 
-    private fun readShell(stream: AdbStream): String {
+    private fun readShell(stream: AdbStream, timeoutMs: Long = 30_000): String {
+        val deadline = System.currentTimeMillis() + timeoutMs
         val output = ByteArrayOutputStream()
         try {
-            while (true) {
+            while (System.currentTimeMillis() < deadline) {
                 val bytes = try { stream.read() } catch (e: IOException) {
                     if (stream.isClosed) break else throw e
                 }
                 if (output.size() + bytes.size > 1_048_576) throw IOException("Shell output quá dài")
                 output.write(bytes)
             }
+            if (System.currentTimeMillis() >= deadline) throw IOException("Shell timeout sau ${timeoutMs}ms")
         } finally { try { stream.close() } catch (_: Exception) {} }
         return String(output.toByteArray(), Charsets.UTF_8)
     }
