@@ -132,10 +132,10 @@ class BluetoothProvisionServer(
                 )
 
                 if (success) {
-                    writeResponse(connection, "OK\\n")
+                    writeResponse(connection, "OK\n")
                     Log.d(TAG, "Đã gửi cấu hình Wi-Fi thành công")
                 } else {
-                    writeResponse(connection, "ERROR: Không kết nối được Wi-Fi\\n")
+                    writeResponse(connection, "ERROR: Không kết nối được Wi-Fi\n")
                     Log.w(TAG, "Kết nối Wi-Fi thất bại")
                 }
             } catch (e: Exception) {
@@ -144,7 +144,7 @@ class BluetoothProvisionServer(
                 try {
                     writeResponse(
                         connection,
-                        "ERROR: ${e.message ?: "Lỗi không xác định"}\\n"
+                        "ERROR: ${e.message ?: "Lỗi không xác định"}\n"
                     )
                 } catch (_: Exception) {
                 }
@@ -162,7 +162,7 @@ class BluetoothProvisionServer(
             if (read == -1) break
 
             builder.append(String(buffer, 0, read, Charsets.UTF_8))
-            if (builder.endsWith("END\\n") || builder.endsWith("END")) break
+            if (builder.endsWith("END\n") || builder.endsWith("END")) break
         }
 
         return builder.toString()
