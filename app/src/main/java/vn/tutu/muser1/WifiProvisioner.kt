@@ -1,5 +1,6 @@
 package vn.tutu.muser1
 
+import android.content.Context
 import android.net.wifi.WifiConfiguration
 import android.net.wifi.WifiManager
 import android.util.Log
@@ -12,6 +13,20 @@ import android.util.Log
 object WifiProvisioner {
 
     private const val TAG = "MuseR1"
+
+    fun isSuccessResult(result: String): Boolean {
+        return !result.contains("failed", ignoreCase = true) &&
+                !result.contains("unable", ignoreCase = true) &&
+                !result.contains("empty", ignoreCase = true) &&
+                !result.contains("must contain", ignoreCase = true)
+    }
+
+    fun connect(context: Context, ssid: String, password: String): Boolean {
+        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            ?: return false
+        val result = connect(wifiManager, ssid, password)
+        return isSuccessResult(result)
+    }
 
     fun connect(wifiManager: WifiManager, ssid: String, password: String): String {
         val cleanSsid = ssid.trim()

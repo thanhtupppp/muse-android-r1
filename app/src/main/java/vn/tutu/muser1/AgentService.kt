@@ -12,6 +12,7 @@ class AgentService : Service() {
 
     private var provisionServer: LocalProvisionServer? = null
     private var discoveryResponder: DiscoveryResponder? = null
+    private var bluetoothProvisionServer: BluetoothProvisionServer? = null
     private var museSessionAdapter: MuseSessionAdapter? = null
     private var telemetryReporter: TelemetryReporter? = null
     private val handler = Handler(Looper.getMainLooper())
@@ -30,6 +31,7 @@ class AgentService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startProvisioningServer()
+        startBluetoothProvisionServer()
         startDiscoveryResponder()
         startMuseSession()
         return START_STICKY
@@ -40,6 +42,9 @@ class AgentService : Service() {
 
         provisionServer?.stopServer()
         provisionServer = null
+
+        bluetoothProvisionServer?.stop()
+        bluetoothProvisionServer = null
 
         discoveryResponder?.stop()
         discoveryResponder = null
@@ -66,6 +71,13 @@ class AgentService : Service() {
                 "Provisioning server ready on port ${LocalProvisionServer.DEFAULT_PORT}"
             )
         }
+    }
+
+    private fun startBluetoothProvisionServer() {
+        if (bluetoothProvisionServer == null) {
+            bluetoothProvisionServer = BluetoothProvisionServer(this)
+        }
+        bluetoothProvisionServer?.start()
     }
 
     private fun startDiscoveryResponder() {
