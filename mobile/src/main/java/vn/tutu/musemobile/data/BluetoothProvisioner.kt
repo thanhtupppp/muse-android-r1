@@ -62,9 +62,11 @@ class BluetoothProvisioner(private val context: Context) {
             ?: throw IOException("Không tìm thấy Muse R1. Hãy bật Bluetooth trên loa và ghép thiết bị.")
     } }
     @SuppressLint("MissingPermission")
-    suspend fun provisionWifi(device: BluetoothDevice, ssid: String, password: String): Result<Unit> = withContext(Dispatchers.IO) { runCatching {
+    suspend fun provisionWifi(device: BluetoothDevice, ssid: String, password: String): Result<String?> = withContext(Dispatchers.IO) { runCatching {
         require(ssid.isNotBlank()) { "SSID không được để trống" }
-        require(password.length >= 8) { "Mật khẩu WPA2 cần ít nhất 8 ký tự" }
+        require(password.isEmpty() || password.length >= 8 || password.length == 64) {
+            "Mật khẩu cần rỗng (mạng mở), từ 8 ký tự hoặc khóa hex 64 ký tự"
+        }
         device.createInsecureRfcommSocketToServiceRecord(MUSE_R1_SPP_UUID).use { socket ->
             socket.connect()
             sendProvisionPayload(socket, ssid, password)
@@ -81,8 +83,8 @@ class BluetoothProvisioner(private val context: Context) {
         }
         socket.outputStream.apply { write(payload.toByteArray(Charsets.UTF_8)); flush() }
     }
-    // Server replies with one newline-terminated OK or ERROR line. EOF is never success.
-    private fun readResponse(socket: BluetoothSocket) {
+    // Server replies with one newline-terminated OK (optionally with ip=...) or ERROR line.
+    private fun readResponse(socket: BluetoothSocket): String? {
         val input = socket.inputStream
         val response = ByteArrayOutputStream()
         while (response.size() < MAX_RESPONSE_BYTES) {
@@ -93,7 +95,10 @@ class BluetoothProvisioner(private val context: Context) {
         }
         if (response.size() >= MAX_RESPONSE_BYTES) throw IOException("Phản hồi Bluetooth từ R1 vượt giới hạn")
         val line = response.toByteArray().toString(Charsets.UTF_8).trim()
-        if (line == "OK") return
+        if (line.startsWith("OK", ignoreCase = true)) {
+            val ipMatch = Regex("ip=([0-9.]+)").find(line)
+            return ipMatch?.groupValues?.get(1)
+        }
         if (line.startsWith("ERROR:", ignoreCase = true)) throw IOException("R1 từ chối cấu hình Wi-Fi: $line")
         throw IOException("Phản hồi Bluetooth không hợp lệ từ R1: ${line.ifEmpty { "<trống>" }}")
     }

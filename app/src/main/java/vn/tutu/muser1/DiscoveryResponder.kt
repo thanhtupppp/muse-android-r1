@@ -94,9 +94,12 @@ class DiscoveryResponder(
 
     private fun buildResponse(): String {
         val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-        val ssid = wifiManager?.connectionInfo?.ssid
-            ?.removeSurrounding("\"")
-            .orEmpty()
+        val rawSsid = wifiManager?.connectionInfo?.ssid
+        val ssid = if (rawSsid.isNullOrBlank() || rawSsid == "<unknown ssid>") {
+            ""
+        } else {
+            rawSsid.removeSurrounding("\"")
+        }
 
         return JSONObject()
             .put("service", "muse-r1-agent")

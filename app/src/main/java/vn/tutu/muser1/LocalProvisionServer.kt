@@ -1,11 +1,13 @@
 package vn.tutu.muser1
 
 import android.content.Context
-import android.net.wifi.WifiManager
 import android.util.Log
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONObject
-import java.io.ByteArrayInputStream
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Local HTTP provisioning server cho Muse Mobile App.
@@ -22,8 +24,12 @@ class LocalProvisionServer(
     private val port: Int = DEFAULT_PORT
 ) : NanoHTTPD(port) {
 
+    private val provisioningActive = AtomicBoolean(false)
+    private var scheduledExecutor: ScheduledExecutorService? = null
+
     fun startServer(): Boolean {
         return try {
+            scheduledExecutor = Executors.newSingleThreadScheduledExecutor()
             start(SOCKET_READ_TIMEOUT, false)
             Log.i(TAG, "Local provisioning server started on port $port")
             true
@@ -34,6 +40,13 @@ class LocalProvisionServer(
     }
 
     fun stopServer() {
+        // Shutdown executor trước, reset cờ kẹt, rồi mới dừng server HTTP
+        scheduledExecutor?.let { exec ->
+            exec.shutdownNow()
+        }
+        scheduledExecutor = null
+        provisioningActive.set(false)
+
         try {
             stop()
             Log.i(TAG, "Local provisioning server stopped")
@@ -62,40 +75,99 @@ class LocalProvisionServer(
     }
 
     private fun provisionWifi(session: IHTTPSession): Response {
+        // Kiểm tra xác thực token nếu thiết bị đã được cấu hình token
+        val expectedToken = MusePreferences.getProvisionToken(context)
+        if (expectedToken.isNotEmpty()) {
+            val token = session.headers["x-muse-token"]
+            if (token != expectedToken) {
+                return unauthorized()
+            }
+        }
+
+        // Giới hạn độ dài Content-Length tránh tràn bộ nhớ
+        val contentLengthStr = session.headers["content-length"]
+        val contentLength = contentLengthStr?.toLongOrNull() ?: 0L
+        if (contentLength > MAX_CONTENT_LENGTH_BYTES) {
+            return badRequest("PAYLOAD_TOO_LARGE")
+        }
+
+        // Chống race condition: chỉ cho phép 1 phiên cấu hình Wi-Fi chạy tại một thời điểm
+        if (!provisioningActive.compareAndSet(false, true)) {
+            return badRequest("PROVISIONING_IN_PROGRESS")
+        }
+
         return try {
             val content = mutableMapOf<String, String>()
             session.parseBody(content)
 
-            val rawBody = content["postData"]
-                ?: return badRequest("Missing JSON body")
+            val rawBody = content["postData"] ?: run {
+                provisioningActive.set(false)
+                return badRequest("MISSING_BODY")
+            }
 
             val payload = JSONObject(rawBody)
-            val ssid = payload.optString("ssid").trim()
+            val ssid = payload.optString("ssid").trimEnd('\r', '\n')
             val password = payload.optString("password")
-            val security = payload.optString("security", "WPA2")
+            val security = payload.optString("security", "WPA2").uppercase()
 
-            if (ssid.isEmpty() || password.length < 8) {
-                return badRequest("SSID is required and WPA2 password must contain at least 8 characters")
+            if (ssid.isEmpty()) {
+                provisioningActive.set(false)
+                return badRequest("EMPTY_SSID")
             }
 
-            if (security != "WPA2") {
-                return badRequest("Only WPA2 is supported in this version")
+            // Kiểm tra security và định dạng password chặt chẽ
+            val isValid = when (security) {
+                "OPEN" -> password.isEmpty()
+                "WPA2" -> password.length in 8..63 || (password.length == 64 && password.all {
+                    it.isDigit() || it in 'a'..'f' || it in 'A'..'F'
+                })
+                else -> false
             }
 
-            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            val ok = if (wifiManager != null) WifiProvisioner.connect(wifiManager, ssid, password) else false
+            if (!isValid) {
+                provisioningActive.set(false)
+                return badRequest("INVALID_SECURITY_OR_PASSWORD")
+            }
 
-            Log.i(TAG, "Wi‑Fi provisioning requested for $ssid, result=$ok")
+            Log.i(TAG, "Wi‑Fi provisioning accepted for SSID='$ssid' ($security) via HTTP")
+
+            val executor = scheduledExecutor ?: run {
+                provisioningActive.set(false)
+                return badRequest("SERVER_STOPPING")
+            }
+
+            // Lập lịch hoãn 1.2 giây để NanoHTTPD kịp flush response HTTP 200 về client trước khi tắt SoftAP
+            executor.schedule(
+                {
+                    try {
+                        WifiProvisioner.connect(context, ssid, password)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Delayed Wi-Fi provisioning failed", e)
+                    } finally {
+                        provisioningActive.set(false)
+                    }
+                },
+                1200L,
+                TimeUnit.MILLISECONDS
+            )
 
             json(
                 response = JSONObject()
-                    .put("ok", ok)
-                    .put("message", if (ok) "Connected command sent for $ssid" else "Wi‑Fi provisioning failed")
-                    .put("device_id", MusePreferences.getDeviceId(context))
+                    .put("ok", true)
+                    .put("message", "Wi-Fi provisioning scheduled for $ssid")
+            )
+        } catch (e: NanoHTTPD.ResponseException) {
+            provisioningActive.set(false)
+            Log.e(TAG, "NanoHTTPD ResponseException: ${e.status}", e)
+            newFixedLengthResponse(
+                e.status,
+                "application/json",
+                JSONObject().put("ok", false).put("error", e.message).toString()
             )
         } catch (error: Exception) {
+            provisioningActive.set(false)
             Log.e(TAG, "Invalid provisioning request", error)
-            badRequest("Invalid JSON body")
+            badRequest("INVALID_REQUEST")
         }
     }
 
@@ -110,7 +182,6 @@ class LocalProvisionServer(
     private fun statusResponse(): JSONObject {
         return JSONObject()
             .put("ok", true)
-            .put("device_id", MusePreferences.getDeviceId(context))
             .put("agent_version", BuildConfig.VERSION_NAME)
             .put("android_version", android.os.Build.VERSION.RELEASE)
             .put("network", NetworkStateObserver.currentSummary(context))
@@ -122,6 +193,17 @@ class LocalProvisionServer(
             Response.Status.OK,
             "application/json",
             response.toString()
+        )
+    }
+
+    private fun unauthorized(): Response {
+        return newFixedLengthResponse(
+            Response.Status.UNAUTHORIZED,
+            "application/json",
+            JSONObject()
+                .put("ok", false)
+                .put("error", "UNAUTHORIZED")
+                .toString()
         )
     }
 
@@ -151,5 +233,6 @@ class LocalProvisionServer(
         private const val TAG = "MuseR1"
         const val DEFAULT_PORT = 8080
         private const val SOCKET_READ_TIMEOUT = 5_000
+        private const val MAX_CONTENT_LENGTH_BYTES = 4096L
     }
 }

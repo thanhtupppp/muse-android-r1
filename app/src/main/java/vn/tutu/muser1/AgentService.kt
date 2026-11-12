@@ -14,10 +14,11 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
-import kotlin.math.abs
 
 class AgentService : Service() {
 
@@ -31,11 +32,69 @@ class AgentService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private var readyAnnouncementRequested = false
     private var bgExecutor: ScheduledExecutorService? = null
+    private var telemetryFuture: ScheduledFuture<*>? = null
+
+    private val readyAnnouncementTask = Runnable {
+        if (provisionServer?.wasStarted() != true) {
+            Log.w(TAG, "Ready announcement skipped: HTTP server is not ready")
+            return@Runnable
+        }
+
+        val preferences = getSharedPreferences(READY_AUDIO_PREFS, Context.MODE_PRIVATE)
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val lastElapsed = preferences.getLong(KEY_LAST_ELAPSED, 0L)
+        var hasPlayed = preferences.getBoolean(KEY_HAS_PLAYED_THIS_BOOT, false)
+
+        // SystemClock.elapsedRealtime() là bộ đếm phần cứng đơn điệu.
+        // Nếu nowElapsed < lastElapsed nghĩa là thiết bị vừa khởi động lại (hardware reboot).
+        if (nowElapsed < lastElapsed) {
+            hasPlayed = false
+        }
+
+        if (hasPlayed) {
+            Log.i(TAG, "Ready announcement already played during this boot")
+            preferences.edit().putLong(KEY_LAST_ELAPSED, nowElapsed).apply()
+            return@Runnable
+        }
+
+        val player = MediaPlayer.create(this, R.raw.agent_ready)
+        if (player == null) {
+            Log.e(TAG, "Could not create ready announcement player")
+            return@Runnable
+        }
+
+        readyPlayer = player
+        player.setOnCompletionListener {
+            Log.i(TAG, "Ready announcement playback completed")
+            it.release()
+            if (readyPlayer === it) readyPlayer = null
+        }
+        player.setOnErrorListener { mediaPlayer, what, extra ->
+            Log.e(TAG, "Ready announcement playback failed: what=$what extra=$extra")
+            mediaPlayer.release()
+            if (readyPlayer === mediaPlayer) readyPlayer = null
+            true
+        }
+
+        try {
+            player.start()
+            preferences.edit()
+                .putBoolean(KEY_HAS_PLAYED_THIS_BOOT, true)
+                .putLong(KEY_LAST_ELAPSED, nowElapsed)
+                .apply()
+            Log.i(TAG, "Playing Muse R1 ready announcement")
+        } catch (error: Exception) {
+            Log.e(TAG, "Could not start ready announcement playback", error)
+            player.release()
+            readyPlayer = null
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
+        isRunning = true
         Log.i(TAG, "Agent service created")
-        bgExecutor = Executors.newSingleThreadScheduledExecutor()
+        bgExecutor = Executors.newScheduledThreadPool(2)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -52,6 +111,9 @@ class AgentService : Service() {
     override fun onDestroy() {
         readyAnnouncementRequested = false
         handler.removeCallbacksAndMessages(null)
+
+        telemetryFuture?.cancel(false)
+        telemetryFuture = null
 
         bgExecutor?.shutdownNow()
         bgExecutor = null
@@ -75,6 +137,7 @@ class AgentService : Service() {
         museSessionAdapter?.stop()
         museSessionAdapter = null
 
+        isRunning = false
         Log.i(TAG, "Agent service destroyed")
         super.onDestroy()
     }
@@ -123,54 +186,6 @@ class AgentService : Service() {
         handler.postDelayed(readyAnnouncementTask, READY_ANNOUNCEMENT_DELAY_MS)
     }
 
-    private val readyAnnouncementTask = Runnable {
-        if (provisionServer?.wasStarted() != true) {
-            Log.w(TAG, "Ready announcement skipped: HTTP server is not ready")
-            return@Runnable
-        }
-
-        val preferences = getSharedPreferences(READY_AUDIO_PREFS, Context.MODE_PRIVATE)
-        // Android 5.1.1 (API 22) does not have Settings.Global.BOOT_COUNT (API 24+).
-        // Instead, calculate approximate boot epoch time: (currentTime - elapsedRealtime).
-        // Across reboots, this changes by days/hours; within the same boot, it stays constant.
-        val currentBootEpoch = System.currentTimeMillis() - SystemClock.elapsedRealtime()
-        val lastBootEpoch = preferences.getLong(KEY_LAST_BOOT_EPOCH, 0L)
-
-        if (lastBootEpoch > 0L && abs(currentBootEpoch - lastBootEpoch) < 60_000L) {
-            Log.i(TAG, "Ready announcement already played during this boot")
-            return@Runnable
-        }
-
-        val player = MediaPlayer.create(this, R.raw.agent_ready)
-        if (player == null) {
-            Log.e(TAG, "Could not create ready announcement player")
-            return@Runnable
-        }
-
-        readyPlayer = player
-        player.setOnCompletionListener {
-            Log.i(TAG, "Ready announcement playback completed")
-            it.release()
-            if (readyPlayer === it) readyPlayer = null
-        }
-        player.setOnErrorListener { mediaPlayer, what, extra ->
-            Log.e(TAG, "Ready announcement playback failed: what=$what extra=$extra")
-            mediaPlayer.release()
-            if (readyPlayer === mediaPlayer) readyPlayer = null
-            true
-        }
-
-        try {
-            player.start()
-            preferences.edit().putLong(KEY_LAST_BOOT_EPOCH, currentBootEpoch).apply()
-            Log.i(TAG, "Playing Muse R1 ready announcement")
-        } catch (error: Exception) {
-            Log.e(TAG, "Could not start ready announcement playback", error)
-            player.release()
-            readyPlayer = null
-        }
-    }
-
     private fun startBluetoothProvisionServer() {
         if (bluetoothProvisionServer == null) {
             bluetoothProvisionServer = BluetoothProvisionServer(this)
@@ -194,24 +209,21 @@ class AgentService : Service() {
             return
         }
 
-        val executor = bgExecutor ?: return
+        val executor = bgExecutor?.takeUnless { it.isShutdown } ?: return
 
-        if (mqttAgent == null) {
-            val commandRouter = CommandRouter(this)
-            val newAgent = MqttAgent(mqttHost, deviceId, commandRouter)
-            mqttAgent = newAgent
-            executor.execute {
-                newAgent.connect()
-            }
+        val agent = mqttAgent ?: MqttAgent(mqttHost, deviceId, CommandRouter(this), executor).also {
+            mqttAgent = it
+            executor.execute { it.connectWithRetry() }
         }
 
-        val agent = mqttAgent ?: return
         if (telemetryReporter == null) {
             telemetryReporter = TelemetryReporter(this, deviceId, agent)
         }
 
-        // Run telemetry publisher periodically on background executor (not main thread)
-        executor.scheduleWithFixedDelay(
+        // Tránh lập lịch trùng lặp nhiều task khi onStartCommand được gọi lại
+        if (telemetryFuture?.isDone == false) return
+
+        telemetryFuture = executor.scheduleWithFixedDelay(
             {
                 if (agent.isConnected()) {
                     telemetryReporter?.publishSnapshot()
@@ -250,10 +262,20 @@ class AgentService : Service() {
         private const val TELEMETRY_INTERVAL_SECONDS = 30L
         private const val READY_ANNOUNCEMENT_DELAY_MS = 800L
         private const val READY_AUDIO_PREFS = "muse_r1_ready_audio"
-        private const val KEY_LAST_BOOT_EPOCH = "last_boot_epoch_ms"
+        private const val KEY_LAST_ELAPSED = "last_elapsed_realtime_ms"
+        private const val KEY_HAS_PLAYED_THIS_BOOT = "has_played_this_boot"
+
+        @Volatile
+        var isRunning: Boolean = false
+            private set
 
         fun start(context: Context) {
-            context.startService(Intent(context, AgentService::class.java))
+            val intent = Intent(context, AgentService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(context, intent)
+            } else {
+                context.startService(intent)
+            }
         }
     }
 }

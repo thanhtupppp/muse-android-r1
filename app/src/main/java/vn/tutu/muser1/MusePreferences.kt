@@ -68,6 +68,19 @@ object MusePreferences {
             .orEmpty()
     }
 
+    fun getProvisionToken(context: Context): String {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString("provision_token", "")
+            .orEmpty()
+    }
+
+    fun saveProvisionToken(context: Context, token: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString("provision_token", token)
+            .apply()
+    }
+
     fun isAgentConfigured(context: Context): Boolean {
         return getMqttHost(context).isNotEmpty() && getDeviceId(context).isNotEmpty()
     }

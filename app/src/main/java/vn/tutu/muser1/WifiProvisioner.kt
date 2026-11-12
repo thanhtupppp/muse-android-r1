@@ -1,61 +1,82 @@
 package vn.tutu.muser1
 
 import android.content.Context
+import android.net.wifi.SupplicantState
 import android.net.wifi.WifiConfiguration
 import android.net.wifi.WifiManager
 import android.util.Log
 
 object WifiProvisioner {
     private const val TAG = "MuseR1"
-    private const val CONNECT_TIMEOUT_MS = 30_000L
+    private const val CONNECT_TIMEOUT_MS = 35_000L
     private const val CONNECT_POLL_INTERVAL_MS = 1_000L
     private const val RADIO_SWITCH_TIMEOUT_MS = 20_000L
     private const val WIFI_AP_STATE_ENABLED = 13
     private const val WIFI_AP_STATE_ENABLING = 12
 
-    @Volatile
-    var lastFailureReason: String = "Chưa có thông tin lỗi"
-        private set
+    private val lock = Any()
 
-    private fun fail(reason: String): Boolean {
-        lastFailureReason = reason
-        Log.e(TAG, reason)
-        return false
+    sealed class ProvisionResult {
+        data class Success(val ip: String) : ProvisionResult()
+        data class Failure(val code: String, val apTouched: Boolean = false) : ProvisionResult()
     }
 
-    fun connect(context: Context, ssid: String, password: String): Boolean {
-        val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-        if (manager == null) {
-            return fail("Không lấy được WifiManager")
+    private fun isValidPassword(p: String): Boolean =
+        p.isEmpty() || p.length in 8..63 ||
+            (p.length == 64 && p.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' })
+
+    fun connect(context: Context, ssid: String, password: String): ProvisionResult =
+        synchronized(lock) {
+            val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                ?: return ProvisionResult.Failure("NO_WIFI_MANAGER")
+            val result = connectAndWait(manager, ssid, password)
+            if (result is ProvisionResult.Failure && result.apTouched) {
+                restoreAp(manager)
+            }
+            result
         }
-        return connectAndWait(manager, ssid, password)
-    }
 
-    fun connect(wifiManager: WifiManager, ssid: String, password: String): Boolean =
-        connectAndWait(wifiManager, ssid, password)
+    fun connect(wifiManager: WifiManager, ssid: String, password: String): ProvisionResult =
+        synchronized(lock) {
+            val result = connectAndWait(wifiManager, ssid, password)
+            if (result is ProvisionResult.Failure && result.apTouched) {
+                restoreAp(wifiManager)
+            }
+            result
+        }
 
     @Suppress("DEPRECATION")
-    fun connectAndWait(wifiManager: WifiManager, ssid: String, password: String): Boolean {
-        lastFailureReason = ""
-        val cleanSsid = ssid.trim()
-        Log.i(TAG, "Wi-Fi provisioning requested for SSID='$cleanSsid' (password omitted)")
+    private fun connectAndWait(
+        wifiManager: WifiManager,
+        ssid: String,
+        password: String
+    ): ProvisionResult {
+        val cleanSsid = ssid.trimEnd('\r', '\n')
+        Log.i(TAG, "Wi-Fi provisioning requested for SSID='$cleanSsid' (password length=${password.length})")
+
         if (cleanSsid.isEmpty()) {
-            return fail("SSID bị trống")
+            return ProvisionResult.Failure("EMPTY_SSID")
         }
-        if (password.length < 8) {
-            return fail("Mật khẩu WPA2 phải có ít nhất 8 ký tự")
+
+        if (!isValidPassword(password)) {
+            Log.e(TAG, "Mật khẩu không hợp lệ (cần rỗng, 8-63 ký tự hoặc 64 hex): độ dài=${password.length}")
+            return ProvisionResult.Failure("INVALID_PASSWORD")
         }
+
+        var apWasDisabledByUs = false
+
         return try {
-            // On single-radio R1 hardware, SoftAP and STA cannot run together.
-            // Stop the hotspot first, then wait for the client Wi-Fi radio to become enabled.
+            // Trên phần cứng Phicomm R1 radio đơn, SoftAP và STA Wi-Fi Client không thể chạy cùng lúc.
+            // Phải tắt SoftAP trước, sau đó chờ radio chuyển sang chế độ client.
             if (!wifiManager.isWifiEnabled) {
                 val apState = getWifiApState(wifiManager)
-                Log.i(TAG, "Wi-Fi client disabled; current SoftAP state=$apState")
+                Log.i(TAG, "Wi-Fi client đang tắt; SoftAP state=$apState")
                 if (apState == WIFI_AP_STATE_ENABLED || apState == WIFI_AP_STATE_ENABLING) {
                     if (!setWifiApEnabled(wifiManager, false)) {
-                        return fail("Wi-Fi client đang tắt và không thể tắt SoftAP qua WifiManager; firmware có thể yêu cầu quyền hệ thống")
+                        return ProvisionResult.Failure("SOFTAP_DISABLE_FAILED")
                     }
-                    Log.i(TAG, "Đã yêu cầu tắt SoftAP; chờ chuyển radio sang Wi-Fi client")
+                    apWasDisabledByUs = true
+                    Log.i(TAG, "Đã gửi yêu cầu tắt SoftAP; chờ chuyển radio sang Wi-Fi client")
                 }
 
                 val radioDeadline = System.currentTimeMillis() + RADIO_SWITCH_TIMEOUT_MS
@@ -64,9 +85,9 @@ object WifiProvisioner {
                 }
 
                 if (!wifiManager.isWifiEnabled) {
-                    Log.i(TAG, "SoftAP state sau khi yêu cầu tắt=${getWifiApState(wifiManager)}; yêu cầu bật Wi-Fi client")
+                    Log.i(TAG, "SoftAP state sau khi yêu cầu tắt=${getWifiApState(wifiManager)}; bật Wi-Fi client")
                     if (!wifiManager.setWifiEnabled(true)) {
-                        return fail("Không bật được Wi-Fi client sau khi tắt SoftAP (setWifiEnabled=false); wifiState=${wifiManager.wifiState}")
+                        return ProvisionResult.Failure("WIFI_ENABLE_FAILED", apWasDisabledByUs)
                     }
                     val enableDeadline = System.currentTimeMillis() + RADIO_SWITCH_TIMEOUT_MS
                     while (System.currentTimeMillis() < enableDeadline && !wifiManager.isWifiEnabled) {
@@ -75,72 +96,120 @@ object WifiProvisioner {
                 }
 
                 if (!wifiManager.isWifiEnabled) {
-                    return fail("Wi-Fi client vẫn tắt sau khi chuyển chế độ; wifiState=${wifiManager.wifiState}, SoftAP state=${getWifiApState(wifiManager)}")
+                    return ProvisionResult.Failure("WIFI_RADIO_STILL_DISABLED", apWasDisabledByUs)
                 }
             }
 
             val configuration = WifiConfiguration().apply {
                 SSID = "\"$cleanSsid\""
-                preSharedKey = "\"$password\""
 
-                // Explicit WPA/WPA2-PSK configuration for legacy Android 5.1.
-                allowedKeyManagement.clear()
-                allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK)
-                allowedAuthAlgorithms.clear()
-                allowedAuthAlgorithms.set(WifiConfiguration.AuthAlgorithm.OPEN)
-                allowedPairwiseCiphers.clear()
-                allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.TKIP)
-                allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.CCMP)
-                allowedGroupCiphers.clear()
-                allowedGroupCiphers.set(WifiConfiguration.GroupCipher.TKIP)
-                allowedGroupCiphers.set(WifiConfiguration.GroupCipher.CCMP)
-                allowedProtocols.clear()
-                allowedProtocols.set(WifiConfiguration.Protocol.WPA)
-                allowedProtocols.set(WifiConfiguration.Protocol.RSN)
+                if (password.isEmpty()) {
+                    allowedKeyManagement.clear()
+                    allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE)
+                } else {
+                    val isHexPsk = password.length == 64 && password.all {
+                        it.isDigit() || it in 'a'..'f' || it in 'A'..'F'
+                    }
+                    preSharedKey = if (isHexPsk) password else "\"$password\""
+
+                    allowedKeyManagement.clear()
+                    allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK)
+                    allowedAuthAlgorithms.clear()
+                    allowedAuthAlgorithms.set(WifiConfiguration.AuthAlgorithm.OPEN)
+                    allowedPairwiseCiphers.clear()
+                    allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.TKIP)
+                    allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.CCMP)
+                    allowedGroupCiphers.clear()
+                    allowedGroupCiphers.set(WifiConfiguration.GroupCipher.TKIP)
+                    allowedGroupCiphers.set(WifiConfiguration.GroupCipher.CCMP)
+                    allowedProtocols.clear()
+                    allowedProtocols.set(WifiConfiguration.Protocol.WPA)
+                    allowedProtocols.set(WifiConfiguration.Protocol.RSN)
+                }
+
                 hiddenSSID = false
                 status = WifiConfiguration.Status.ENABLED
             }
-            var networkId = wifiManager.addNetwork(configuration)
-            if (networkId == -1) {
-                Log.w(TAG, "addNetwork returned -1; searching configured networks")
-                val existingId = findExistingNetworkId(wifiManager, cleanSsid)
-                if (existingId == -1) {
-                    val configured = try { wifiManager.configuredNetworks } catch (error: Exception) {
-                        Log.e(TAG, "Reading configuredNetworks failed", error)
-                        null
-                    }
-                    val configuredSummary = when {
-                        configured == null -> "null/không được firmware cung cấp"
-                        configured.isEmpty() -> "rỗng"
-                        else -> configured.joinToString(limit = 8) { it.SSID ?: "<SSID-null>" }
-                    }
-                    val wifiState = try { wifiManager.wifiState.toString() } catch (_: Exception) { "unknown" }
-                    return fail("addNetwork=-1; configuredNetworks=$configuredSummary; wifiState=$wifiState; kiểm tra SoftAP/firmware Wi-Fi")
-                }
-                configuration.networkId = existingId
-                networkId = wifiManager.updateNetwork(configuration)
-                if (networkId == -1) {
-                    return fail("Android từ chối cập nhật mạng đã lưu (updateNetwork=-1)")
-                }
-                Log.i(TAG, "Updated existing Wi-Fi networkId=$networkId")
-            } else {
-                Log.i(TAG, "Added Wi-Fi networkId=$networkId")
+
+            // Xóa cấu hình cũ của SSID này trước để tránh xung đột quyền/UID
+            val existingId = findExistingNetworkId(wifiManager, cleanSsid)
+            if (existingId != -1) {
+                Log.i(TAG, "Xóa mạng cũ existingId=$existingId trước khi thêm cấu hình mới")
+                wifiManager.removeNetwork(existingId)
             }
+
+            val networkId = wifiManager.addNetwork(configuration)
+            if (networkId == -1) {
+                return ProvisionResult.Failure("ADD_NETWORK_FAILED", apWasDisabledByUs)
+            }
+
+            Log.i(TAG, "Wi-Fi networkId=$networkId đã thêm vào hệ thống")
 
             if (!wifiManager.enableNetwork(networkId, true)) {
-                return fail("Android từ chối bật mạng Wi-Fi (enableNetwork=false)")
+                wifiManager.removeNetwork(networkId)
+                return ProvisionResult.Failure("ENABLE_NETWORK_FAILED", apWasDisabledByUs)
             }
-            Log.i(TAG, "enableNetwork accepted for networkId=$networkId")
 
-            val saved = wifiManager.saveConfiguration()
-            Log.i(TAG, "saveConfiguration result=$saved")
-            val reconnect = wifiManager.reconnect()
-            Log.i(TAG, "reconnect result=$reconnect")
+            wifiManager.saveConfiguration()
 
-            waitForConnection(wifiManager, cleanSsid)
+            val ip = waitForConnection(wifiManager, cleanSsid)
+            if (ip != null) {
+                ProvisionResult.Success(ip)
+            } else {
+                Log.w(TAG, "Kết nối thất bại, dọn dẹp networkId=$networkId khỏi danh sách lưu")
+                wifiManager.removeNetwork(networkId)
+                wifiManager.saveConfiguration()
+                ProvisionResult.Failure("CONNECT_TIMEOUT", apWasDisabledByUs)
+            }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            Log.w(TAG, "Wi-Fi provisioning bị ngắt", e)
+            ProvisionResult.Failure("INTERRUPTED", apWasDisabledByUs)
         } catch (error: Exception) {
             Log.e(TAG, "Wi-Fi provisioning exception", error)
-            fail("Ngoại lệ ${error.javaClass.simpleName}: ${error.message ?: "không có chi tiết"}")
+            ProvisionResult.Failure("EXCEPTION", apWasDisabledByUs)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun waitForConnection(wifiManager: WifiManager, ssid: String): String? {
+        val expected = "\"$ssid\""
+        val deadline = System.currentTimeMillis() + CONNECT_TIMEOUT_MS
+
+        while (System.currentTimeMillis() < deadline) {
+            val info = wifiManager.connectionInfo
+            val actual = info?.ssid
+            val ssidOk = actual == expected || actual == ssid
+            val completed = info?.supplicantState == SupplicantState.COMPLETED
+            val ipInt = wifiManager.dhcpInfo?.ipAddress ?: 0
+            val hasIp = ipInt != 0
+
+            Log.d(TAG, "Wi-Fi poll: actual='$actual', completed=$completed, hasIp=$hasIp ($ipInt)")
+
+            if (ssidOk && completed && hasIp) {
+                val ipString = ipToString(ipInt)
+                Log.i(TAG, "Wi-Fi đã kết nối và nhận DHCP IP: $ipString (SSID='$ssid')")
+                return ipString
+            }
+
+            Thread.sleep(CONNECT_POLL_INTERVAL_MS)
+        }
+
+        return null
+    }
+
+    private fun ipToString(ip: Int): String =
+        "${ip and 0xff}.${(ip shr 8) and 0xff}.${(ip shr 16) and 0xff}.${(ip shr 24) and 0xff}"
+
+    private fun restoreAp(wifiManager: WifiManager) {
+        Log.w(TAG, "Kết nối Wi-Fi thất bại, khôi phục lại SoftAP để người dùng có thể thử lại")
+        runCatching {
+            wifiManager.disconnect()
+            wifiManager.setWifiEnabled(false)
+            Thread.sleep(2_000)
+            setWifiApEnabled(wifiManager, true)
+        }.onFailure {
+            Log.w(TAG, "Khôi phục SoftAP thất bại", it)
         }
     }
 
@@ -168,25 +237,6 @@ object WifiProvisioner {
             Log.e(TAG, "Không thể gọi WifiManager.setWifiApEnabled($enabled)", error)
             false
         }
-    }
-
-    @Suppress("DEPRECATION")
-    private fun waitForConnection(wifiManager: WifiManager, ssid: String): Boolean {
-        val expected = "\"$ssid\""
-        val deadline = System.currentTimeMillis() + CONNECT_TIMEOUT_MS
-        while (System.currentTimeMillis() < deadline) {
-            val info = wifiManager.connectionInfo
-            val actual = info?.ssid
-            val state = wifiManager.dhcpInfo
-            Log.d(TAG, "Wi-Fi connection check: ssid=$actual, networkId=${info?.networkId}, ipAddress=${state?.ipAddress}")
-            if (actual == expected || actual == ssid) {
-                Log.i(TAG, "Wi-Fi connected successfully: SSID='$ssid'")
-                return true
-            }
-            Thread.sleep(CONNECT_POLL_INTERVAL_MS)
-        }
-        val info = wifiManager.connectionInfo
-        return fail("Hết 30 giây chờ Wi-Fi. Mong đợi=$expected, hiện tại=${info?.ssid}, trạng thái=${info?.supplicantState}, networkId=${info?.networkId}")
     }
 
     @Suppress("DEPRECATION")

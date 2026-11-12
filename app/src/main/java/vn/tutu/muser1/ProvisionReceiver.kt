@@ -35,9 +35,8 @@ class ProvisionReceiver : BroadcastReceiver() {
             return
         }
 
-        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-        val result = if (wifiManager != null) WifiProvisioner.connect(wifiManager, ssid, password) else false
-        Log.i(TAG, "Wi‑Fi provisioning: $result")
+        val result = WifiProvisioner.connect(context, ssid, password)
+        Log.i(TAG, "Wi‑Fi provisioning result: $result")
     }
 
     private fun configureMuse(context: Context, intent: Intent) {

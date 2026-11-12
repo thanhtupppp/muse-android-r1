@@ -2,11 +2,13 @@ package vn.tutu.muser1
 
 import android.util.Log
 import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken
-import org.eclipse.paho.client.mqttv3.MqttCallback
+import org.eclipse.paho.client.mqttv3.MqttCallbackExtended
 import org.eclipse.paho.client.mqttv3.MqttClient
 import org.eclipse.paho.client.mqttv3.MqttConnectOptions
 import org.eclipse.paho.client.mqttv3.MqttMessage
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 
 /**
  * MQTT command channel giữa Muse Mobile App và R1 Agent.
@@ -20,12 +22,22 @@ import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
 class MqttAgent(
     private val host: String,
     private val deviceId: String,
-    private val commandRouter: CommandRouter
-) : MqttCallback {
+    private val commandRouter: CommandRouter,
+    executor: Executor? = null,
+    private val username: String? = null,
+    private val password: String? = null
+) : MqttCallbackExtended {
 
+    @Volatile
     private var client: MqttClient? = null
 
-    fun connect() {
+    @Volatile
+    private var isDisposed: Boolean = false
+
+    // Fallback executor để đảm bảo không bao giờ chặn I/O thread của Paho
+    private val dispatchExecutor: Executor = executor ?: Executors.newSingleThreadExecutor()
+
+    fun connect(): Boolean {
         try {
             val brokerUrl = normalizeBrokerUrl(host)
             val clientId = "muse-r1-$deviceId-${System.currentTimeMillis()}"
@@ -36,48 +48,90 @@ class MqttAgent(
                 isCleanSession = true
                 connectionTimeout = 10
                 keepAliveInterval = 30
+                if (!this@MqttAgent.username.isNullOrEmpty()) {
+                    userName = this@MqttAgent.username
+                }
+                if (!this@MqttAgent.password.isNullOrEmpty()) {
+                    password = this@MqttAgent.password.toCharArray()
+                }
+                // Thiết lập LWT (Last Will and Testament) để thông báo khi mất kết nối đột ngột
+                setWill(
+                    "muse/r1/$deviceId/status",
+                    "\"offline\"".toByteArray(Charsets.UTF_8),
+                    1,
+                    true
+                )
             }
 
+            // Gán client trước khi connect() để callback connectComplete luôn thấy client != null
+            client = newClient
             newClient.setCallback(this)
             newClient.connect(options)
 
-            val commandTopic = "muse/r1/$deviceId/cmd"
-            newClient.subscribe(commandTopic, 1)
-
-            publish("muse/r1/$deviceId/status", "\"online\"")
-            client = newClient
-
-            Log.i(TAG, "MQTT connected: $brokerUrl, topic=$commandTopic")
+            Log.i(TAG, "MQTT connect completed to $brokerUrl")
+            return true
         } catch (error: Exception) {
+            client = null
             Log.e(TAG, "MQTT connection failed", error)
+            return false
+        }
+    }
+
+    fun connectWithRetry(maxRetries: Int = 5) {
+        isDisposed = false
+        var attempt = 0
+        while (attempt < maxRetries && !isDisposed) {
+            if (connect()) return
+            attempt++
+            if (attempt < maxRetries && !isDisposed) {
+                try {
+                    val backoff = (1000L * (1 shl attempt)).coerceAtMost(30_000L)
+                    Thread.sleep(backoff)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return
+                }
+            }
+        }
+    }
+
+    override fun connectComplete(reconnect: Boolean, serverURI: String) {
+        val commandTopic = "muse/r1/$deviceId/cmd"
+        try {
+            client?.subscribe(commandTopic, 1)
+            publish("muse/r1/$deviceId/status", "\"online\"", retained = true)
+            Log.i(TAG, "MQTT connectComplete (reconnect=$reconnect): $serverURI, subscribed=$commandTopic")
+        } catch (error: Exception) {
+            Log.e(TAG, "Lỗi khi subscribe lại MQTT sau reconnect", error)
         }
     }
 
     fun disconnect() {
+        isDisposed = true
         try {
+            publish("muse/r1/$deviceId/status", "\"offline\"", retained = true)
             client?.disconnect()
         } catch (error: Exception) {
             Log.w(TAG, "MQTT disconnect failed", error)
+        } finally {
+            client = null
         }
-
-        client = null
     }
 
     fun isConnected(): Boolean {
         return client?.isConnected == true
     }
 
-    fun publish(topic: String, payload: String) {
+    fun publish(topic: String, payload: String, retained: Boolean = false) {
         try {
             val mqttClient = client ?: return
+            if (!mqttClient.isConnected) return
 
-            if (!mqttClient.isConnected) {
-                return
-            }
-
-            mqttClient.publish(topic, MqttMessage(payload.toByteArray()).apply {
+            val message = MqttMessage(payload.toByteArray(Charsets.UTF_8)).apply {
                 qos = 1
-            })
+                isRetained = retained
+            }
+            mqttClient.publish(topic, message)
         } catch (error: Exception) {
             Log.e(TAG, "MQTT publish failed: $topic", error)
         }
@@ -88,18 +142,23 @@ class MqttAgent(
     }
 
     override fun messageArrived(topic: String, message: MqttMessage) {
-        val payload = String(message.payload)
+        val payload = String(message.payload, Charsets.UTF_8)
         Log.i(TAG, "MQTT command received: $topic -> $payload")
-        commandRouter.handle(payload)
+        dispatchExecutor.execute {
+            commandRouter.handle(payload)
+        }
     }
 
     override fun deliveryComplete(token: IMqttDeliveryToken?) = Unit
 
     private fun normalizeBrokerUrl(host: String): String {
-        return if (host.startsWith("tcp://") || host.startsWith("ssl://") || host.startsWith("mqtt://")) {
-            host.replace("mqtt://", "tcp://")
-        } else {
-            "tcp://$host"
+        return when {
+            host.startsWith("tcp://") -> host
+            host.startsWith("ssl://") -> host
+            host.startsWith("mqtt://") -> host.replace("mqtt://", "tcp://")
+            host.startsWith("mqtts://") -> host.replace("mqtts://", "ssl://")
+            host.startsWith("tls://") -> host.replace("tls://", "ssl://")
+            else -> "tcp://$host"
         }
     }
 

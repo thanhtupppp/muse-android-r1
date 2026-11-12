@@ -198,9 +198,15 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                 ssid = network.ssid,
                 password = password
             ).fold(
-                onSuccess = {
-                    status = "Đã nhận xác nhận Bluetooth từ R1. Đang xác minh trên Wi‑Fi nhà..."
-                    waitForR1OnHomeNetwork()
+                onSuccess = { ip ->
+                    if (!ip.isNullOrBlank()) {
+                        speakerIp = ip
+                        status = "R1 đã kết nối Wi‑Fi nhà tại $ip! Đang kiểm tra kết nối..."
+                        waitForR1OnHomeNetwork(knownIp = ip)
+                    } else {
+                        status = "Đã nhận xác nhận Bluetooth từ R1. Đang xác minh trên Wi‑Fi nhà..."
+                        waitForR1OnHomeNetwork()
+                    }
                 },
                 onFailure = { error ->
                     // The R1 may switch off its setup hotspot before the Bluetooth
@@ -214,12 +220,28 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
-    private suspend fun waitForR1OnHomeNetwork(bluetoothError: String? = null) {
+    private suspend fun waitForR1OnHomeNetwork(
+        bluetoothError: String? = null,
+        knownIp: String? = null
+    ) {
         state = ProvisioningState.WaitingForR1
-        status = if (bluetoothError == null) {
-            "R1 đang kết nối Wi‑Fi nhà. Đang tìm R1 qua mạng nội bộ..."
-        } else {
-            "Bluetooth bị ngắt; đang xác minh R1 qua Wi‑Fi nhà. Hãy để điện thoại kết nối router nhà."
+        status = when {
+            knownIp != null -> "R1 đã báo IP $knownIp. Đang kết nối thử..."
+            bluetoothError == null -> "R1 đang kết nối Wi‑Fi nhà. Đang tìm R1 qua mạng nội bộ..."
+            else -> "Bluetooth bị ngắt; đang xác minh R1 qua Wi‑Fi nhà. Hãy để điện thoại kết nối router nhà."
+        }
+
+        // Nếu loa đã gửi lại IP thật qua Bluetooth, probe trực tiếp trước
+        if (knownIp != null) {
+            repeat(6) {
+                delay(1500)
+                val health = apiClient.health(knownIp)
+                if (health.isSuccess) {
+                    state = ProvisioningState.Success(knownIp)
+                    status = "Đã kết nối thành công tới R1 tại $knownIp:8080"
+                    return
+                }
+            }
         }
 
         repeat(24) {

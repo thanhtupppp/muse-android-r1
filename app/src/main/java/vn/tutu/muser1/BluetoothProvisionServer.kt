@@ -5,7 +5,10 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.UUID
 
@@ -25,16 +28,24 @@ class BluetoothProvisionServer(
         private const val BLUETOOTH_ENABLE_TIMEOUT_MS = 15_000L
         private const val BLUETOOTH_POLL_INTERVAL_MS = 500L
         private const val DISCOVERABLE_DURATION_SECONDS = 3_600
+        private const val MAX_PAYLOAD_BYTES = 2048
+        private const val CLIENT_TIMEOUT_MS = 15_000L
     }
 
     @Suppress("DEPRECATION")
     private val bluetoothAdapter: BluetoothAdapter? =
         BluetoothAdapter.getDefaultAdapter()
 
+    @Volatile
     private var serverSocket: BluetoothServerSocket? = null
 
     @Volatile
     private var isRunning = false
+
+    @Volatile
+    private var session = 0
+
+    private val watchdog = Handler(Looper.getMainLooper())
 
     @SuppressLint("MissingPermission")
     fun start() {
@@ -47,6 +58,7 @@ class BluetoothProvisionServer(
         }
 
         isRunning = true
+        val mySession = ++session
 
         Thread({
             try {
@@ -73,7 +85,7 @@ class BluetoothProvisionServer(
                     }
                 }
 
-                if (!isRunning) return@Thread
+                if (!isRunning || session != mySession) return@Thread
 
                 if (!adapter.isEnabled) {
                     Log.e(TAG, "Bluetooth vẫn chưa bật sau thời gian chờ")
@@ -95,6 +107,7 @@ class BluetoothProvisionServer(
                 val discoverableDeadline = System.currentTimeMillis() + 5_000L
                 while (
                     isRunning &&
+                    session == mySession &&
                     adapter.scanMode != BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE &&
                     System.currentTimeMillis() < discoverableDeadline
                 ) {
@@ -109,110 +122,128 @@ class BluetoothProvisionServer(
 
                 Log.i(TAG, "Bluetooth SPP server đã sẵn sàng")
 
-                while (isRunning) {
+                while (isRunning && session == mySession) {
                     val socket = serverSocket?.accept() ?: break
                     handleClient(socket)
                 }
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
-                if (isRunning) {
+                if (isRunning && session == mySession) {
                     Log.w(TAG, "Luồng Bluetooth bị gián đoạn", e)
                 }
             } catch (e: IOException) {
-                if (isRunning) {
+                if (isRunning && session == mySession) {
                     Log.e(TAG, "Bluetooth server lỗi", e)
                 }
             } finally {
                 closeServer()
-                isRunning = false
+                if (session == mySession) {
+                    isRunning = false
+                }
             }
         }, "BluetoothProvisionServerThread").start()
     }
 
     fun stop() {
+        session++
         isRunning = false
         closeServer()
     }
 
     private fun handleClient(socket: BluetoothSocket) {
-        socket.use { connection ->
-            try {
-                val payload = readPayload(connection)
-                val request = parsePayload(payload)
+        val timeoutTask = Runnable {
+            Log.w(TAG, "Bluetooth client quá hạn đọc payload $CLIENT_TIMEOUT_MS ms, đóng socket")
+            runCatching { socket.close() }
+        }
+        watchdog.postDelayed(timeoutTask, CLIENT_TIMEOUT_MS)
 
-                val ssid = request["ssid"]
-                    ?: throw IOException("Thiếu SSID")
-
-                val password = request["password"]
-                    ?: throw IOException("Thiếu mật khẩu")
-
-                Log.d(TAG, "Nhận yêu cầu cấu hình Wi-Fi")
-
-                val success = wifiProvisioner.connect(
-                    context = context,
-                    ssid = ssid,
-                    password = password
-                )
-
-                if (success) {
-                    writeResponse(connection, "OK\n")
-                    Log.d(TAG, "Đã gửi cấu hình Wi-Fi thành công")
-                } else {
-                    val reason = wifiProvisioner.lastFailureReason.ifBlank { "Không rõ nguyên nhân" }
-                    writeResponse(connection, "ERROR: $reason\n")
-                    Log.w(TAG, "Kết nối Wi-Fi thất bại: $reason")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Lỗi xử lý Bluetooth client", e)
-
+        try {
+            socket.use { connection ->
                 try {
-                    writeResponse(
-                        connection,
-                        "ERROR: ${e.message ?: "Lỗi không xác định"}\n"
+                    val payload = readPayload(connection)
+                    val request = parsePayload(payload)
+
+                    // Đã nhận xong payload, hủy ngay watchdog đọc để wifiProvisioner có đủ thời gian kết nối
+                    watchdog.removeCallbacks(timeoutTask)
+
+                    val ssid = request["ssid"]
+                        ?: throw IOException("Thiếu SSID")
+
+                    val password = request["password"]
+                        ?: throw IOException("Thiếu mật khẩu")
+
+                    Log.d(TAG, "Nhận yêu cầu cấu hình Wi-Fi cho SSID: $ssid")
+
+                    val result = wifiProvisioner.connect(
+                        context = context,
+                        ssid = ssid,
+                        password = password
                     )
-                } catch (_: Exception) {
+
+                    when (result) {
+                        is WifiProvisioner.ProvisionResult.Success -> {
+                            writeResponse(connection, "OK ip=${result.ip}\n")
+                            Log.d(TAG, "Đã cấu hình Wi-Fi thành công! IP: ${result.ip}")
+
+                            // Tắt chế độ discoverable sau khi cấu hình xong để tăng tính bảo mật
+                            bluetoothAdapter?.let { adapter ->
+                                setScanModeCompat(adapter, BluetoothAdapter.SCAN_MODE_CONNECTABLE, 0)
+                            }
+                        }
+                        is WifiProvisioner.ProvisionResult.Failure -> {
+                            writeResponse(connection, "ERROR: ${result.code}\n")
+                            Log.w(TAG, "Kết nối Wi-Fi thất bại: ${result.code}")
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Lỗi xử lý Bluetooth client: ${e.message}", e)
+                    try {
+                        val msg = e.message ?: "BAD_REQUEST"
+                        writeResponse(connection, "ERROR: $msg\n")
+                    } catch (_: Exception) {
+                    }
                 }
             }
+        } finally {
+            watchdog.removeCallbacks(timeoutTask)
         }
     }
 
     private fun readPayload(socket: BluetoothSocket): String {
-        val builder = StringBuilder()
-        val buffer = ByteArray(1024)
+        val out = ByteArrayOutputStream()
+        val buffer = ByteArray(512)
         val input = socket.inputStream
 
-        while (true) {
+        while (out.size() < MAX_PAYLOAD_BYTES) {
             val read = input.read(buffer)
             if (read == -1) break
-
-            builder.append(String(buffer, 0, read, Charsets.UTF_8))
-            if (builder.endsWith("END\n") || builder.endsWith("END")) break
-        }
-
-        return builder.toString()
-    }
-
-    private fun parsePayload(payload: String): Map<String, String> {
-        val result = mutableMapOf<String, String>()
-
-        payload.lines().forEach { line ->
-            val trimmed = line.trim()
-
-            if (trimmed.isNotEmpty() &&
-                trimmed != "MUSE_WIFI_CONFIG" &&
-                trimmed != "END"
-            ) {
-                val index = trimmed.indexOf('=')
-
-                if (index > 0) {
-                    val key = trimmed.substring(0, index)
-                    val value = trimmed.substring(index + 1)
-                    result[key] = value
-                }
+            out.write(buffer, 0, read)
+            val currentText = out.toString("UTF-8")
+            // Kiểm tra dòng END riêng biệt thay vì endsWith để tránh cắt cụt password
+            if (currentText.lines().any { it.trimEnd('\r') == "END" }) {
+                break
             }
         }
 
-        return result
+        return out.toString("UTF-8")
+    }
+
+    private fun parsePayload(payload: String): Map<String, String> {
+        return payload.lines()
+            .map { it.trimEnd('\r') }
+            .filter { it.isNotEmpty() && it != "MUSE_WIFI_CONFIG" && it != "END" }
+            .mapNotNull { line ->
+                val index = line.indexOf('=')
+                if (index > 0) {
+                    val key = line.substring(0, index)
+                    // Không gọi line.trim() để giữ nguyên khoảng trắng đầu/cuối của mật khẩu
+                    val value = line.substring(index + 1)
+                    key to value
+                } else {
+                    null
+                }
+            }
+            .toMap()
     }
 
     private fun writeResponse(
