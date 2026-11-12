@@ -53,6 +53,23 @@ object WifiProvisioner {
             val configuration = WifiConfiguration().apply {
                 SSID = "\"$cleanSsid\""
                 preSharedKey = "\"$password\""
+
+                // Explicit WPA/WPA2-PSK configuration for legacy Android 5.1.
+                allowedKeyManagement.clear()
+                allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK)
+                allowedAuthAlgorithms.clear()
+                allowedAuthAlgorithms.set(WifiConfiguration.AuthAlgorithm.OPEN)
+                allowedPairwiseCiphers.clear()
+                allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.TKIP)
+                allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.CCMP)
+                allowedGroupCiphers.clear()
+                allowedGroupCiphers.set(WifiConfiguration.GroupCipher.TKIP)
+                allowedGroupCiphers.set(WifiConfiguration.GroupCipher.CCMP)
+                allowedProtocols.clear()
+                allowedProtocols.set(WifiConfiguration.Protocol.WPA)
+                allowedProtocols.set(WifiConfiguration.Protocol.RSN)
+                hiddenSSID = false
+                status = WifiConfiguration.Status.ENABLED
             }
             var networkId = wifiManager.addNetwork(configuration)
             if (networkId == -1) {
