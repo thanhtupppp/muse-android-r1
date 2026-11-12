@@ -44,7 +44,7 @@ class TelemetryReporter(
 
     private fun availableStorageBytes(): Long {
         return try {
-            File(context.filesDir.absoluteFile).usableSpace
+            context.filesDir.usableSpace
         } catch (error: Exception) {
             -1L
         }

@@ -35,7 +35,7 @@ class MqttAgent(
                 isAutomaticReconnect = true
                 isCleanSession = true
                 connectionTimeout = 10
-                keepAlive = 30
+                keepAliveInterval = 30
             }
 
             newClient.setCallback(this)

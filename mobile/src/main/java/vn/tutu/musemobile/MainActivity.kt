@@ -39,7 +39,7 @@ class MainActivity : ComponentActivity() {
                             AddR1Screen(
                                 viewModel = viewModel,
                                 onRequestWifiPermission = ::requestWifiPermissions,
-                                onWifiSelected = { navController.navigate("provisioning") }
+                                onR1Found = { navController.navigate("wifi_picker") }
                             )
                         }
 
@@ -47,7 +47,7 @@ class MainActivity : ComponentActivity() {
                             WifiPickerScreen(
                                 viewModel = viewModel,
                                 onBack = { navController.popBackStack() },
-                                onWifiSelected = { navController.navigate("provisioning") }
+                                onProvisioningStarted = { navController.navigate("provisioning") }
                             )
                         }
 
