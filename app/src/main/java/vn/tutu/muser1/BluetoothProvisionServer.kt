@@ -6,7 +6,7 @@ import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.os.Handler
-import android.os.Looper
+import android.os.HandlerThread
 import android.util.Log
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -45,7 +45,8 @@ class BluetoothProvisionServer(
     @Volatile
     private var session = 0
 
-    private val watchdog = Handler(Looper.getMainLooper())
+    private var watchdogThread: HandlerThread? = null
+    private var watchdog: Handler? = null
 
     @SuppressLint("MissingPermission")
     fun start() {
@@ -60,6 +61,10 @@ class BluetoothProvisionServer(
         isRunning = true
         val mySession = ++session
 
+        val thread = HandlerThread("BluetoothWatchdogThread").apply { start() }
+        watchdogThread = thread
+        watchdog = Handler(thread.looper)
+
         Thread({
             try {
                 // Phicomm R1 chạy Android 5.1.1: Agent có thể bật Bluetooth
@@ -68,17 +73,14 @@ class BluetoothProvisionServer(
                     Log.i(TAG, "Bluetooth đang tắt; Agent đang yêu cầu bật Bluetooth")
 
                     @Suppress("DEPRECATION")
-                    val enableRequested = adapter.enable()
+                    val enabled = adapter.enable()
+                    Log.i(TAG, "Kết quả yêu cầu bật Bluetooth: $enabled")
 
-                    if (!enableRequested) {
-                        Log.e(TAG, "Không thể yêu cầu hệ thống bật Bluetooth")
-                        return@Thread
-                    }
-
-                    val deadline = System.currentTimeMillis() +
-                        BLUETOOTH_ENABLE_TIMEOUT_MS
-
-                    while (isRunning && !adapter.isEnabled &&
+                    val deadline = System.currentTimeMillis() + BLUETOOTH_ENABLE_TIMEOUT_MS
+                    while (
+                        isRunning &&
+                        session == mySession &&
+                        !adapter.isEnabled &&
                         System.currentTimeMillis() < deadline
                     ) {
                         Thread.sleep(BLUETOOTH_POLL_INTERVAL_MS)
@@ -115,7 +117,8 @@ class BluetoothProvisionServer(
                 }
                 Log.i(TAG, "Bluetooth scan mode sau yêu cầu: ${adapter.scanMode}")
 
-                serverSocket = adapter.listenUsingInsecureRfcommWithServiceRecord(
+                // Dùng Secure RFCOMM để kênh Bluetooth được mã hóa an toàn qua bonding
+                serverSocket = adapter.listenUsingRfcommWithServiceRecord(
                     SERVICE_NAME,
                     MUSE_R1_SPP_UUID
                 )
@@ -155,7 +158,7 @@ class BluetoothProvisionServer(
             Log.w(TAG, "Bluetooth client quá hạn đọc payload $CLIENT_TIMEOUT_MS ms, đóng socket")
             runCatching { socket.close() }
         }
-        watchdog.postDelayed(timeoutTask, CLIENT_TIMEOUT_MS)
+        watchdog?.postDelayed(timeoutTask, CLIENT_TIMEOUT_MS)
 
         try {
             socket.use { connection ->
@@ -164,7 +167,16 @@ class BluetoothProvisionServer(
                     val request = parsePayload(payload)
 
                     // Đã nhận xong payload, hủy ngay watchdog đọc để wifiProvisioner có đủ thời gian kết nối
-                    watchdog.removeCallbacks(timeoutTask)
+                    watchdog?.removeCallbacks(timeoutTask)
+
+                    // Kiểm tra xác thực token nếu thiết bị đã được cấu hình token
+                    val expectedToken = MusePreferences.getProvisionToken(context)
+                    if (expectedToken.isNotEmpty()) {
+                        val token = request["token"]
+                        if (token != expectedToken) {
+                            throw IOException("UNAUTHORIZED")
+                        }
+                    }
 
                     val ssid = request["ssid"]
                         ?: throw IOException("Thiếu SSID")
@@ -205,7 +217,7 @@ class BluetoothProvisionServer(
                 }
             }
         } finally {
-            watchdog.removeCallbacks(timeoutTask)
+            watchdog?.removeCallbacks(timeoutTask)
         }
     }
 
@@ -218,32 +230,36 @@ class BluetoothProvisionServer(
             val read = input.read(buffer)
             if (read == -1) break
             out.write(buffer, 0, read)
-            val currentText = out.toString("UTF-8")
-            // Kiểm tra dòng END riêng biệt thay vì endsWith để tránh cắt cụt password
-            if (currentText.lines().any { it.trimEnd('\r') == "END" }) {
+
+            val text = out.toString("UTF-8")
+            val lines = text.split("\n")
+            // Chỉ kết thúc khi có dòng riêng biệt là "END" (hoặc "END\r")
+            if (lines.any { it.trimEnd('\r') == "END" }) {
                 break
             }
+        }
+
+        if (out.size() >= MAX_PAYLOAD_BYTES) {
+            throw IOException("Payload vượt quá giới hạn $MAX_PAYLOAD_BYTES bytes")
         }
 
         return out.toString("UTF-8")
     }
 
     private fun parsePayload(payload: String): Map<String, String> {
-        return payload.lines()
-            .map { it.trimEnd('\r') }
-            .filter { it.isNotEmpty() && it != "MUSE_WIFI_CONFIG" && it != "END" }
-            .mapNotNull { line ->
-                val index = line.indexOf('=')
-                if (index > 0) {
-                    val key = line.substring(0, index)
-                    // Không gọi line.trim() để giữ nguyên khoảng trắng đầu/cuối của mật khẩu
-                    val value = line.substring(index + 1)
-                    key to value
-                } else {
-                    null
-                }
+        val lines = payload.split("\n")
+        val map = mutableMapOf<String, String>()
+
+        for (rawLine in lines) {
+            val line = rawLine.trimEnd('\r')
+            if (line.isEmpty() || line == "END" || line == "MUSE_WIFI_CONFIG") continue
+            val parts = line.split("=", limit = 2)
+            if (parts.size == 2) {
+                map[parts[0].trim()] = parts[1]
             }
-            .toMap()
+        }
+
+        return map
     }
 
     private fun writeResponse(
@@ -286,6 +302,10 @@ class BluetoothProvisionServer(
 
     private fun closeServer() {
         try {
+            watchdog?.removeCallbacksAndMessages(null)
+            watchdog = null
+            watchdogThread?.quitSafely()
+            watchdogThread = null
             serverSocket?.close()
         } catch (_: Exception) {
         } finally {

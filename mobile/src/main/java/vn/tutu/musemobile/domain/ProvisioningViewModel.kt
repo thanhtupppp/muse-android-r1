@@ -144,7 +144,10 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                 diagnosticLogs = discoveryLog + report.lineSequence().toList()
                 val health = apiClient.health(targetIp)
                 status = health.fold(
-                    onSuccess = { "Đã kết nối Muse R1 Agent tại $targetIp:8080." },
+                    onSuccess = { isReady ->
+                        if (isReady) "Đã kết nối Muse R1 Agent tại $targetIp:8080."
+                        else "Muse R1 Agent tại $targetIp:8080 chưa sẵn sàng (ok=false)."
+                    },
                     onFailure = { error ->
                         "Health check thất bại tại $targetIp:8080: ${error.javaClass.simpleName}: ${error.message ?: "không có chi tiết"}. Xem nhật ký chẩn đoán."
                     }
@@ -236,7 +239,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
             repeat(6) {
                 delay(1500)
                 val health = apiClient.health(knownIp)
-                if (health.isSuccess) {
+                if (health.getOrDefault(false)) {
                     state = ProvisioningState.Success(knownIp)
                     status = "Đã kết nối thành công tới R1 tại $knownIp:8080"
                     return

@@ -1,10 +1,10 @@
 package vn.tutu.muser1
 
+import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
 import android.util.Log
 import org.json.JSONObject
-import java.io.File
 
 /**
  * Gửi trạng thái thiết bị định kỳ qua MQTT.
@@ -51,8 +51,15 @@ class TelemetryReporter(
     }
 
     private fun availableMemoryBytes(): Long {
-        val runtime = Runtime.getRuntime()
-        return runtime.maxMemory() - runtime.totalMemory() + runtime.freeMemory()
+        return try {
+            val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            val memoryInfo = ActivityManager.MemoryInfo()
+            activityManager?.getMemoryInfo(memoryInfo)
+            memoryInfo.availMem
+        } catch (_: Exception) {
+            val runtime = Runtime.getRuntime()
+            runtime.maxMemory() - runtime.totalMemory() + runtime.freeMemory()
+        }
     }
 
     companion object {
