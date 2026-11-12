@@ -67,6 +67,8 @@ class LocalProvisionServer(
 
             Method.POST -> when (uri) {
                 "/provision-wifi" -> provisionWifi(session)
+                "/configure-muse", "/pair" -> configureMuse(session)
+                "/command" -> handleCommand(session)
                 else -> notFound()
             }
 
@@ -171,6 +173,83 @@ class LocalProvisionServer(
         }
     }
 
+    private fun configureMuse(session: IHTTPSession): Response {
+        val contentLengthStr = session.headers["content-length"]
+        val contentLength = contentLengthStr?.toLongOrNull() ?: 0L
+        if (contentLength > MAX_CONTENT_LENGTH_BYTES) {
+            return badRequest("PAYLOAD_TOO_LARGE")
+        }
+
+        return try {
+            val content = mutableMapOf<String, String>()
+            session.parseBody(content)
+
+            val rawBody = content["postData"] ?: return badRequest("MISSING_BODY")
+            val payload = JSONObject(rawBody)
+
+            val museToken = payload.optString("muse_token").trim()
+            val mqttHost = payload.optString("mqtt_host").trim()
+
+            if (museToken.isEmpty()) {
+                return badRequest("EMPTY_MUSE_TOKEN")
+            }
+
+            if (!museToken.startsWith("mgst_")) {
+                return badRequest("INVALID_TOKEN_PREFIX: Muse token phải bắt đầu bằng 'mgst_'")
+            }
+
+            val deviceId = MusePreferences.getDeviceId(context)
+            val gadgetClient = MuseGadgetClient(context, deviceId)
+            val saved = gadgetClient.setToken(museToken)
+
+            if (!saved) {
+                return badRequest("FAILED_TO_SAVE_TOKEN")
+            }
+
+            if (mqttHost.isNotEmpty()) {
+                MusePreferences.saveAgentConfig(context, mqttHost, deviceId)
+            }
+
+            // Kích hoạt lại AgentService để nạp token và kết nối Muse VM
+            AgentService.start(context)
+
+            Log.i(TAG, "Muse token configured successfully for device $deviceId")
+
+            json(
+                response = JSONObject()
+                    .put("ok", true)
+                    .put("message", "Muse token configured successfully")
+                    .put("device_id", deviceId)
+                    .put("muse_paired", true)
+            )
+        } catch (error: Exception) {
+            Log.e(TAG, "Error configuring Muse token", error)
+            badRequest("INVALID_REQUEST: ${error.message}")
+        }
+    }
+
+    private fun handleCommand(session: IHTTPSession): Response {
+        val contentLengthStr = session.headers["content-length"]
+        val contentLength = contentLengthStr?.toLongOrNull() ?: 0L
+        if (contentLength > MAX_CONTENT_LENGTH_BYTES) {
+            return badRequest("PAYLOAD_TOO_LARGE")
+        }
+
+        return try {
+            val content = mutableMapOf<String, String>()
+            session.parseBody(content)
+
+            val rawBody = content["postData"] ?: return badRequest("MISSING_BODY")
+            val surface = MuseCommandSurface(context)
+            val result = surface.execute(rawBody)
+
+            json(response = JSONObject(result))
+        } catch (error: Exception) {
+            Log.e(TAG, "Error executing command", error)
+            badRequest("INVALID_REQUEST: ${error.message}")
+        }
+    }
+
     private fun healthResponse(): JSONObject {
         return JSONObject()
             .put("ok", true)
@@ -184,8 +263,10 @@ class LocalProvisionServer(
             .put("ok", true)
             .put("agent_version", BuildConfig.VERSION_NAME)
             .put("android_version", android.os.Build.VERSION.RELEASE)
+            .put("device_id", MusePreferences.getDeviceId(context))
             .put("network", NetworkStateObserver.currentSummary(context))
             .put("muse_paired", MusePreferences.isMusePaired(context))
+            .put("has_muse_token", MusePreferences.getMuseToken(context).isNotEmpty())
     }
 
     private fun json(response: JSONObject): Response {

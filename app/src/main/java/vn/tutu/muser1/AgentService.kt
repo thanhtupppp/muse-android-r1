@@ -243,9 +243,11 @@ class AgentService : Service() {
             return
         }
 
-        if (museSessionAdapter != null) {
+        if (museSessionAdapter?.isConnected() == true) {
             return
         }
+
+        museSessionAdapter?.stop()
 
         museSessionAdapter = MuseSessionAdapter(
             context = this,

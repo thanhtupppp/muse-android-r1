@@ -92,7 +92,7 @@ object MusePreferences {
     }
 
     fun isMusePaired(context: Context): Boolean {
-        return getMuseToken(context).startsWith("mgst_") &&
-            getMuseRefreshToken(context).isNotEmpty()
+        return getMuseToken(context).startsWith("mgst_") ||
+            (getMuseAccessToken(context).isNotEmpty() && getMuseRefreshToken(context).isNotEmpty())
     }
 }

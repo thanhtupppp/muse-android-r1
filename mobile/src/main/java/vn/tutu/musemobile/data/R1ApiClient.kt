@@ -147,4 +147,91 @@ class R1ApiClient(private val context: Context? = null) {
             }
         }
     }
+
+    suspend fun configureMuse(
+        speakerIp: String,
+        museToken: String,
+        mqttHost: String? = null,
+        token: String? = null
+    ): Result<JSONObject> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanIp = speakerIp.trim()
+            require(isValidIpv4(cleanIp)) { "Địa chỉ IP không hợp lệ: $speakerIp" }
+            val cleanToken = museToken.trim()
+            require(cleanToken.isNotEmpty()) { "Muse Token không được để trống" }
+            require(cleanToken.startsWith("mgst_")) { "Muse Token phải bắt đầu bằng 'mgst_'" }
+
+            val payload = JSONObject().apply {
+                put("muse_token", cleanToken)
+                if (!mqttHost.isNullOrBlank()) {
+                    put("mqtt_host", mqttHost.trim())
+                }
+            }.toString()
+
+            val reqBuilder = Request.Builder()
+                .url("http://$cleanIp:8080/configure-muse")
+                .post(payload.toRequestBody("application/json".toMediaType()))
+            if (!token.isNullOrEmpty()) {
+                reqBuilder.addHeader("x-muse-token", token)
+            }
+
+            getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
+                val rawBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    val sample = rawBody.take(500)
+                    throw IOException("R1 từ chối cấu hình Muse Token: HTTP ${response.code} ${response.message}; body=$sample")
+                }
+                val json = JSONObject(rawBody)
+                if (!json.optBoolean("ok", false)) {
+                    throw IOException("R1 báo lỗi: ${json.optString("error", rawBody)}")
+                }
+                json
+            }
+        }
+    }
+
+    suspend fun executeCommand(
+        speakerIp: String,
+        command: JSONObject,
+        token: String? = null
+    ): Result<JSONObject> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanIp = speakerIp.trim()
+            require(isValidIpv4(cleanIp)) { "Địa chỉ IP không hợp lệ: $speakerIp" }
+
+            val reqBuilder = Request.Builder()
+                .url("http://$cleanIp:8080/command")
+                .post(command.toString().toRequestBody("application/json".toMediaType()))
+            if (!token.isNullOrEmpty()) {
+                reqBuilder.addHeader("x-muse-token", token)
+            }
+
+            getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
+                val rawBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    val sample = rawBody.take(500)
+                    throw IOException("Lệnh thất bại: HTTP ${response.code} ${response.message}; body=$sample")
+                }
+                val json = JSONObject(rawBody)
+                if (!json.optBoolean("ok", false)) {
+                    throw IOException(json.optString("error", "Lỗi thực thi lệnh"))
+                }
+                json
+            }
+        }
+    }
+
+    suspend fun setVolume(speakerIp: String, volume: Int): Result<JSONObject> {
+        val command = JSONObject()
+            .put("name", "muse_r1.set_volume")
+            .put("volume", volume.coerceIn(0, 100))
+        return executeCommand(speakerIp, command)
+    }
+
+    suspend fun testTts(speakerIp: String, text: String): Result<JSONObject> {
+        val command = JSONObject()
+            .put("name", "muse_r1.tts")
+            .put("text", text)
+        return executeCommand(speakerIp, command)
+    }
 }

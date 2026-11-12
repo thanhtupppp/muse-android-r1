@@ -72,7 +72,29 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
 
     var selectedNetwork by mutableStateOf<WifiNetwork?>(null)
         private set
-    private var speakerIp = "192.168.43.1"
+    var currentSpeakerIp by mutableStateOf("192.168.2.10")
+        private set
+    val speakerIp: String get() = currentSpeakerIp
+
+    var currentMuseTokenInput by mutableStateOf("")
+        private set
+    val museTokenInput: String get() = currentMuseTokenInput
+
+    var isPairingMuse by mutableStateOf(false)
+        private set
+
+    var musePairStatus by mutableStateOf("")
+        private set
+
+    var isMusePaired by mutableStateOf(false)
+        private set
+
+    var speakerVolume by mutableStateOf(70)
+        private set
+
+    var commandResult by mutableStateOf("")
+        private set
+
     private var password = ""
     private var bluetoothDevice: BluetoothDevice? = null
 
@@ -99,7 +121,92 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun setSpeakerIp(value: String) {
-        speakerIp = value
+        currentSpeakerIp = value.trim()
+    }
+
+    fun setMuseTokenInput(value: String) {
+        currentMuseTokenInput = value.trim()
+    }
+
+    fun configureMuseToken(ip: String? = null, token: String? = null) {
+        val targetIp = (ip ?: speakerIp).trim()
+        val rawToken = (token ?: museTokenInput).trim()
+
+        if (rawToken.isEmpty()) {
+            musePairStatus = "Vui lòng nhập Muse SDK Token"
+            return
+        }
+
+        if (!rawToken.startsWith("mgst_")) {
+            musePairStatus = "Token không đúng định dạng! Phải bắt đầu bằng 'mgst_'"
+            return
+        }
+
+        viewModelScope.launch {
+            isPairingMuse = true
+            musePairStatus = "Đang gửi Muse Token tới R1 ($targetIp:8080)..."
+            apiClient.configureMuse(speakerIp = targetIp, museToken = rawToken).fold(
+                onSuccess = { res ->
+                    isMusePaired = true
+                    val devId = res.optString("device_id", "R1")
+                    musePairStatus = "✅ Đã ghép đôi thành công! Thiết bị: $devId"
+                },
+                onFailure = { err ->
+                    musePairStatus = "❌ Ghép đôi thất bại: ${err.message}"
+                }
+            )
+            isPairingMuse = false
+        }
+    }
+
+    fun checkMuseStatus(ip: String? = null) {
+        val targetIp = (ip ?: speakerIp).trim()
+        viewModelScope.launch {
+            commandResult = "Đang kiểm tra trạng thái R1..."
+            apiClient.status(speakerIp = targetIp).fold(
+                onSuccess = { res ->
+                    val paired = res.optBoolean("muse_paired", false)
+                    val devId = res.optString("device_id", "")
+                    val net = res.optString("network", "")
+                    isMusePaired = paired
+                    commandResult = "Trạng thái R1:\n• ID thiết bị: $devId\n• Trạng thái Muse: ${if (paired) "ĐÃ GHÉP ĐÔI ✅" else "Chưa ghép đôi ❌"}\n• Mạng: $net"
+                },
+                onFailure = { err ->
+                    commandResult = "Không kết nối được R1: ${err.message}"
+                }
+            )
+        }
+    }
+
+    fun setSpeakerVolume(volume: Int, ip: String? = null) {
+        val targetIp = (ip ?: speakerIp).trim()
+        speakerVolume = volume.coerceIn(0, 100)
+        viewModelScope.launch {
+            commandResult = "Đang đặt âm lượng $volume%..."
+            apiClient.setVolume(speakerIp = targetIp, volume = volume).fold(
+                onSuccess = {
+                    commandResult = "✅ Đã đặt âm lượng thành $volume%"
+                },
+                onFailure = { err ->
+                    commandResult = "❌ Lỗi đổi âm lượng: ${err.message}"
+                }
+            )
+        }
+    }
+
+    fun testTts(text: String, ip: String? = null) {
+        val targetIp = (ip ?: speakerIp).trim()
+        viewModelScope.launch {
+            commandResult = "Đang gửi TTS: \"$text\"..."
+            apiClient.testTts(speakerIp = targetIp, text = text).fold(
+                onSuccess = {
+                    commandResult = "✅ R1 đã nhận lệnh TTS: \"$text\""
+                },
+                onFailure = { err ->
+                    commandResult = "❌ Lỗi gửi TTS: ${err.message}"
+                }
+            )
+        }
     }
 
     fun setPassword(value: String) {
@@ -145,7 +252,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                 val discoveryLog = mutableListOf<String>()
                 val discovered = discoveryClient.discover(timeoutMs = 4000)
                 if (discovered != null) {
-                    speakerIp = discovered.ipAddress
+                    currentSpeakerIp = discovered.ipAddress
                     discoveryLog += "UDP Discovery: tìm thấy R1 tại ${discovered.ipAddress}"
                     discoveryLog += "SSID trên R1: ${discovered.ssid}"
                 } else {
@@ -261,7 +368,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
             ).fold(
                 onSuccess = { ip ->
                     if (!ip.isNullOrBlank()) {
-                        speakerIp = ip
+                        currentSpeakerIp = ip
                         status = "R1 đã kết nối Wi‑Fi nhà tại $ip! Đang kiểm tra kết nối..."
                         waitForR1OnHomeNetwork(knownIp = ip, targetSsid = network.ssid)
                     } else {

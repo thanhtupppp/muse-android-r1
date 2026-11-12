@@ -103,12 +103,13 @@ fun ProvisioningScreen(
                 Spacer(modifier = Modifier.height(24.dp))
                 Button(
                     onClick = {
+                        viewModel.setSpeakerIp(state.ip)
                         viewModel.retry(resetNetwork = true)
                         onDone()
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Hoàn tất")
+                    Text("Hoàn tất & Ghép đôi Muse AI 🚀")
                 }
             }
 

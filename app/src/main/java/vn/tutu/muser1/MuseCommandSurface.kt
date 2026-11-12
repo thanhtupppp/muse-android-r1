@@ -2,6 +2,7 @@ package vn.tutu.muser1
 
 import android.content.Context
 import android.media.AudioManager
+import android.media.MediaPlayer
 import android.util.Log
 import org.json.JSONObject
 
@@ -68,8 +69,15 @@ class MuseCommandSurface(private val context: Context) {
             return errorResponse("TTS text is required")
         }
 
-        // TTS engine sẽ được tích hợp ở giai đoạn tiếp theo.
         Log.i(TAG, "Muse TTS requested: $text")
+
+        try {
+            val player = MediaPlayer.create(context, R.raw.agent_ready)
+            player?.setOnCompletionListener { it.release() }
+            player?.start()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to play test sound", e)
+        }
 
         return successResponse(
             JSONObject()

@@ -66,16 +66,18 @@ class MuseSessionAdapter(
 
     private fun refreshTokensIfNeeded() {
         val refreshToken = MusePreferences.getMuseRefreshToken(context)
+        val sdkToken = MusePreferences.getMuseToken(context)
 
-        if (refreshToken.isEmpty()) {
-            Log.w(TAG, "Muse refresh token is missing")
+        if (refreshToken.isEmpty() && sdkToken.isEmpty()) {
+            Log.w(TAG, "Both Muse refresh token and SDK token are missing")
             return
         }
 
+        val effectiveToken = if (refreshToken.isNotEmpty()) refreshToken else sdkToken
         val (tokens, status) = MuseApi.refreshDeviceToken(
-            refreshToken = refreshToken,
+            refreshToken = effectiveToken,
             deviceId = deviceId,
-            sdkToken = MusePreferences.getMuseToken(context)
+            sdkToken = sdkToken
         )
 
         if (tokens == null) {

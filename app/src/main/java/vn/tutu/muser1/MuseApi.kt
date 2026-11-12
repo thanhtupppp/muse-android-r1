@@ -106,10 +106,16 @@ object MuseApi {
                 }
             }
 
+        val authHeader = if (cleanRefreshToken.startsWith("mgst_")) {
+            "Bearer $cleanRefreshToken"
+        } else {
+            "Bearer hatch_refresh:$cleanRefreshToken"
+        }
+
         val connection = openConnection(
             url = API_BASE + REFRESH_PATH,
             method = "POST",
-            accessToken = "Bearer hatch_refresh:$cleanRefreshToken"
+            accessToken = authHeader
         )
 
         return try {

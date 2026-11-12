@@ -24,8 +24,10 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -56,7 +58,7 @@ fun AddR1Screen(
     onRequestWifiPermission: () -> Unit,
     onR1Found: () -> Unit
 ) {
-    var speakerIp by remember { mutableStateOf("192.168.43.1") }
+    var speakerIp by remember(viewModel.speakerIp) { mutableStateOf(viewModel.speakerIp) }
     var apkUrl by remember {
         mutableStateOf("https://github.com/thanhtupppp/muse-android-r1/releases/download/v0.1.0/app-debug.apk")
     }
@@ -92,12 +94,205 @@ fun AddR1Screen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "Thêm loa Muse R1",
+                text = "Quản lý loa Muse R1",
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold
             )
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // ===== THẺ GHÉP ĐÔI MUSE AI =====
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "🤖 Ghép đôi Muse AI",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (viewModel.isMusePaired) {
+                            Surface(
+                                color = Color(0xFF2B8A3E),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text(
+                                    text = "ĐÃ GHÉP ĐÔI ✔",
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Text(
+                        text = "Nhập Muse SDK Token (mgst_...) để kết nối loa với máy chủ trợ lý Muse AI.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = speakerIp,
+                        onValueChange = {
+                            speakerIp = it
+                            viewModel.setSpeakerIp(it.trim())
+                        },
+                        label = { Text("Địa chỉ IP loa R1") },
+                        placeholder = { Text("192.168.2.10") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = viewModel.museTokenInput,
+                        onValueChange = { viewModel.setMuseTokenInput(it) },
+                        label = { Text("Muse SDK Token (mgst_...)") },
+                        placeholder = { Text("mgst_xxxxxx...") },
+                        singleLine = true,
+                        trailingIcon = {
+                            TextButton(onClick = {
+                                val clip = clipboardManager.getText()?.text?.trim().orEmpty()
+                                if (clip.isNotEmpty()) {
+                                    viewModel.setMuseTokenInput(clip)
+                                    Toast.makeText(context, "Đã dán token từ clipboard!", Toast.LENGTH_SHORT).show()
+                                }
+                            }) {
+                                Text("Dán 📋", fontSize = 12.sp)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Button(
+                        onClick = {
+                            viewModel.setSpeakerIp(speakerIp.trim())
+                            viewModel.configureMuseToken(speakerIp.trim(), viewModel.museTokenInput)
+                        },
+                        enabled = !viewModel.isPairingMuse,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        if (viewModel.isPairingMuse) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Đang gửi token tới R1...")
+                        } else {
+                            Text(if (viewModel.isMusePaired) "Cập nhật Token Muse AI" else "Ghép đôi với Muse AI 🚀")
+                        }
+                    }
+
+                    if (viewModel.musePairStatus.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = viewModel.musePairStatus,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                            color = if (viewModel.musePairStatus.contains("✅")) Color(0xFF2B8A3E) else MaterialTheme.colorScheme.error
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    HorizontalDivider()
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "Tiện ích kiểm tra & thử loa:",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.setSpeakerIp(speakerIp.trim())
+                                viewModel.checkMuseStatus(speakerIp.trim())
+                            },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                        ) {
+                            Text("Trạng thái", fontSize = 11.sp)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.setSpeakerIp(speakerIp.trim())
+                                viewModel.setSpeakerVolume(70, speakerIp.trim())
+                            },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                        ) {
+                            Text("Âm lượng 70%", fontSize = 11.sp)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.setSpeakerIp(speakerIp.trim())
+                                viewModel.testTts("Xin chào, Muse R1 đã sẵn sàng hoạt động!", speakerIp.trim())
+                            },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                        ) {
+                            Text("Thử loa", fontSize = 11.sp)
+                        }
+                    }
+
+                    if (viewModel.commandResult.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Surface(
+                            color = Color(0xFF1E1E1E),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = viewModel.commandResult,
+                                color = Color(0xFFE0E0E0),
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.padding(8.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Text(
+                text = "Cài đặt & Cấu hình Wi‑Fi R1",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
 
             Text("1. Kết nối Wi‑Fi nhà hoặc 4G, bấm 'Tải APK về máy'.", style = MaterialTheme.typography.bodyMedium)
             Text("2. Giữ nút tròn trên loa R1 ~6 giây để mở hotspot.", style = MaterialTheme.typography.bodyMedium)
