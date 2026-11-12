@@ -83,14 +83,14 @@ class LocalProvisionServer(
             }
 
             val wifiManager = context.getSystemService(WifiManager::class.java)
-            val result = WifiProvisioner.connect(wifiManager, ssid, password)
+            val ok = WifiProvisioner.connect(wifiManager, ssid, password)
 
-            Log.i(TAG, "Wi‑Fi provisioning requested for $ssid")
+            Log.i(TAG, "Wi‑Fi provisioning requested for $ssid, result=$ok")
 
             json(
                 response = JSONObject()
-                    .put("ok", true)
-                    .put("message", result)
+                    .put("ok", ok)
+                    .put("message", if (ok) "Connected command sent for $ssid" else "Wi‑Fi provisioning failed")
                     .put("device_id", MusePreferences.getDeviceId(context))
             )
         } catch (error: Exception) {
