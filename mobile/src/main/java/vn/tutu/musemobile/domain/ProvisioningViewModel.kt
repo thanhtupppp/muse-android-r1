@@ -187,36 +187,45 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                 password = password
             ).fold(
                 onSuccess = {
-                    status = "Đã gửi Wi‑Fi tới R1. Đang chờ R1 kết nối..."
+                    status = "Đã nhận xác nhận Bluetooth từ R1. Đang xác minh trên Wi‑Fi nhà..."
                     waitForR1OnHomeNetwork()
                 },
                 onFailure = { error ->
-                    state = ProvisioningState.Failure(
-                        error.message ?: "Không gửi được Wi‑Fi qua Bluetooth"
+                    // The R1 may switch off its setup hotspot before the Bluetooth
+                    // response reaches the phone. Verify on the home LAN before failing.
+                    status = "Mất xác nhận Bluetooth (${error.message ?: "không rõ lỗi"}). Đang thử tìm R1 trên Wi‑Fi nhà..."
+                    waitForR1OnHomeNetwork(
+                        bluetoothError = error.message ?: "Không nhận được xác nhận Bluetooth"
                     )
                 }
             )
         }
     }
 
-    private suspend fun waitForR1OnHomeNetwork() {
+    private suspend fun waitForR1OnHomeNetwork(bluetoothError: String? = null) {
         state = ProvisioningState.WaitingForR1
-        status = "R1 đang kết nối Wi‑Fi nhà. Không tắt nguồn loa."
+        status = if (bluetoothError == null) {
+            "R1 đang kết nối Wi‑Fi nhà. Đang tìm R1 qua mạng nội bộ..."
+        } else {
+            "Bluetooth bị ngắt; đang xác minh R1 qua Wi‑Fi nhà. Hãy để điện thoại kết nối router nhà."
+        }
 
         repeat(24) {
             delay(5000)
-
             val discovered = discoveryClient.discover()
-
             if (discovered != null) {
                 state = ProvisioningState.Success(discovered.ipAddress)
-                status = "R1 đã kết nối Wi‑Fi nhà: " + discovered.ipAddress
+                status = "Đã xác minh R1 trên Wi‑Fi nhà: " + discovered.ipAddress
                 return
             }
         }
 
         state = ProvisioningState.Failure(
-            "Không tìm thấy R1 trên Wi‑Fi nhà sau 2 phút. Hãy kiểm tra router hoặc dùng ADB."
+            if (bluetoothError == null) {
+                "Không tìm thấy R1 trên Wi‑Fi nhà sau 2 phút. Hãy kết nối điện thoại vào Wi‑Fi nhà rồi thử lại."
+            } else {
+                "Không nhận được xác nhận Bluetooth và cũng không tìm thấy R1 trên Wi‑Fi nhà. Bluetooth: $bluetoothError. Hãy kết nối điện thoại vào Wi‑Fi nhà rồi xác minh lại."
+            }
         )
     }
 
