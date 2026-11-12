@@ -12,13 +12,14 @@ class BootReceiver : BroadcastReceiver() {
             return
         }
 
-        if (!MusePreferences.isAgentConfigured(context)) {
-            Log.i(TAG, "Boot completed but agent is not configured")
-            return
+        // The local provisioning API and UDP discovery must run before MQTT
+        // credentials/device pairing are configured.
+        Log.i(TAG, "Boot completed, starting Muse R1 agent in provisioning-capable mode")
+        try {
+            AgentService.start(context)
+        } catch (error: Exception) {
+            Log.e(TAG, "Could not start Muse R1 agent after boot", error)
         }
-
-        Log.i(TAG, "Boot completed, starting Muse R1 agent")
-        AgentService.start(context)
     }
 
     companion object {
