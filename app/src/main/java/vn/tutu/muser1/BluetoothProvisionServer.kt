@@ -84,7 +84,8 @@ class BluetoothProvisionServer(
                 // as well as connectable before accepting the SPP connection.
                 Log.i(TAG, "Bluetooth scan mode trước khi discoverable: ${adapter.scanMode}")
                 if (adapter.scanMode != BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE) {
-                    val discoverable = adapter.setScanMode(
+                    val discoverable = setScanModeCompat(
+                        adapter,
                         BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE,
                         DISCOVERABLE_DURATION_SECONDS
                     )
@@ -220,6 +221,35 @@ class BluetoothProvisionServer(
         val output = socket.outputStream
         output.write(response.toByteArray(Charsets.UTF_8))
         output.flush()
+    }
+
+    private fun setScanModeCompat(
+        adapter: BluetoothAdapter,
+        mode: Int,
+        duration: Int
+    ): Boolean {
+        return try {
+            val method = adapter.javaClass.getMethod(
+                "setScanMode",
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType
+            )
+            (method.invoke(adapter, mode, duration) as? Boolean) ?: false
+        } catch (e: NoSuchMethodException) {
+            try {
+                val method = adapter.javaClass.getMethod(
+                    "setScanMode",
+                    Int::class.javaPrimitiveType
+                )
+                (method.invoke(adapter, mode) as? Boolean) ?: false
+            } catch (e2: Exception) {
+                Log.w(TAG, "Không thể gọi setScanMode qua reflection: ${e2.message}")
+                false
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Lỗi khi gọi setScanMode: ${e.message}")
+            false
+        }
     }
 
     private fun closeServer() {
