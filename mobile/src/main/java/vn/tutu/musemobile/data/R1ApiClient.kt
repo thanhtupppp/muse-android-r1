@@ -23,7 +23,11 @@ class R1ApiClient {
                 .build()
 
             httpClient.newCall(request).execute().use { response ->
-                response.isSuccessful
+                if (!response.isSuccessful) {
+                    val body = response.body?.string().orEmpty().take(500)
+                    throw java.io.IOException("HTTP ${response.code} ${response.message}; body=$body")
+                }
+                true
             }
         }
     }

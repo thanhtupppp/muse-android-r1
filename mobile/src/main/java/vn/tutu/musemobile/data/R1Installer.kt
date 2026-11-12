@@ -148,6 +148,53 @@ class R1Installer(private val context: Context) {
         catch (e: Exception) { Result.failure(e) }
     }
 
+
+    /**
+     * Collects device-side diagnostics over the authorized ADB transport.
+     * The TCP probe is performed by the phone; remaining commands run on R1.
+     */
+    suspend fun diagnoseAgent(speakerIp: String): Result<String> = withContext(Dispatchers.IO) {
+        val report = StringBuilder()
+        try {
+            val probe = try {
+                Socket().use { probeSocket ->
+                    probeSocket.connect(InetSocketAddress(speakerIp.trim(), 8080), 2_500)
+                    "CONNECTED"
+                }
+            } catch (error: Exception) {
+                "${error.javaClass.simpleName}: ${error.message ?: "no details"}"
+            }
+            report.append("=== PHONE TCP PROBE :8080 ===\n").append(probe).append("\n")
+
+            val (socket, connection) = openConnection(speakerIp.trim(), 5555)
+            try {
+                val command = """
+                    echo ===MUSE_DIAG_SERVICE===
+                    dumpsys activity services vn.tutu.muser1/.AgentService 2>&1
+                    echo ===MUSE_DIAG_PORT_8080===
+                    (cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -i ':1F90') || echo PORT_8080_NOT_LISTENING
+                    echo ===MUSE_DIAG_PROCESS===
+                    ps | grep '[v]n.tutu.muser1' || echo AGENT_PROCESS_NOT_FOUND
+                    echo ===MUSE_DIAG_LOGCAT===
+                    logcat -d -t 120 -s MuseR1:I MuseR1:W MuseR1:E 2>&1
+                """.trimIndent()
+                report.append("=== ADB DEVICE DIAGNOSTICS ===\n")
+                report.append(readShell(connection.open("shell:$command")))
+            } finally {
+                closeQuietly(socket, connection)
+            }
+            Result.success(report.toString())
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            report.append("\nADB DIAGNOSTIC ERROR: ")
+                .append(error.javaClass.simpleName)
+                .append(": ")
+                .append(error.message ?: "no details")
+            Result.success(report.toString())
+        }
+    }
+
     private fun openConnection(host: String, port: Int): Pair<Socket, AdbConnection> {
         val socket = Socket()
         var connection: AdbConnection? = null

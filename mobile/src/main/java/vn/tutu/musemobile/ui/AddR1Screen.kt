@@ -341,10 +341,64 @@ fun AddR1Screen(
                     viewModel.setSpeakerIp(speakerIp.trim())
                     viewModel.checkR1()
                 },
-                enabled = !viewModel.isInstalling,
+                enabled = !viewModel.isInstalling && !viewModel.isCheckingR1,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Kiểm tra kết nối R1")
+                if (viewModel.isCheckingR1) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Đang chẩn đoán R1...")
+                } else {
+                    Text("Kiểm tra kết nối R1")
+                }
+            }
+
+            if (viewModel.diagnosticLogs.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Nhật ký chẩn đoán R1", fontWeight = FontWeight.Bold)
+                            TextButton(onClick = {
+                                clipboardManager.setText(AnnotatedString(viewModel.getDiagnosticsText()))
+                                Toast.makeText(context, "Đã sao chép nhật ký chẩn đoán", Toast.LENGTH_SHORT).show()
+                            }) { Text("Sao chép") }
+                        }
+                        Surface(
+                            color = Color(0xFF1E1E1E),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 80.dp, max = 320.dp)
+                        ) {
+                            val diagnosticState = rememberLazyListState()
+                            LaunchedEffect(viewModel.diagnosticLogs.size) {
+                                if (viewModel.diagnosticLogs.isNotEmpty()) {
+                                    diagnosticState.animateScrollToItem(viewModel.diagnosticLogs.lastIndex)
+                                }
+                            }
+                            LazyColumn(state = diagnosticState, modifier = Modifier.padding(8.dp)) {
+                                items(viewModel.diagnosticLogs) { line ->
+                                    val color = when {
+                                        line.contains("ERROR", true) || line.contains("NOT_LISTENING", true) || line.contains("REFUSED", true) -> Color(0xFFFF6B6B)
+                                        line.contains("CONNECTED", true) || line.contains("started", true) || line.contains("ready", true) -> Color(0xFF51CF66)
+                                        else -> Color(0xFFE0E0E0)
+                                    }
+                                    Text(line, color = color, fontSize = 10.sp, fontFamily = FontFamily.Monospace, lineHeight = 14.sp)
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(10.dp))

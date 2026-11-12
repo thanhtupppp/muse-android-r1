@@ -48,6 +48,12 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     var installLogs by mutableStateOf<List<String>>(emptyList())
         private set
 
+    var diagnosticLogs by mutableStateOf<List<String>>(emptyList())
+        private set
+
+    var isCheckingR1 by mutableStateOf(false)
+        private set
+
     var isDownloading by mutableStateOf(false)
         private set
 
@@ -113,22 +119,38 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun checkR1() {
+        if (isCheckingR1) return
+        isCheckingR1 = true
+        diagnosticLogs = emptyList()
         viewModelScope.launch {
             state = ProvisioningState.CheckingR1
-            status = "Đang kiểm tra R1 tại " + speakerIp + "..."
-
-            apiClient.health(speakerIp).fold(
-                onSuccess = { reachable ->
-                    status = if (reachable) {
-                        "Đã tìm thấy Muse R1 Agent."
-                    } else {
-                        "Không tìm thấy Muse R1 Agent tại " + speakerIp + ":8080."
-                    }
-                },
-                onFailure = {
-                    status = "Không kết nối được R1. Hãy kiểm tra Wi‑Fi hotspot Phicomm_R1_xxx."
+            status = "Đang chẩn đoán R1 qua Wi-Fi và ADB..."
+            try {
+                val report = installer.diagnoseAgent(speakerIp).getOrElse {
+                    "Không lấy được chẩn đoán ADB: ${it.javaClass.simpleName}: ${it.message}"
                 }
-            )
+                diagnosticLogs = report.lineSequence().toList()
+                val health = apiClient.health(speakerIp)
+                status = health.fold(
+                    onSuccess = { "Đã kết nối Muse R1 Agent tại $speakerIp:8080." },
+                    onFailure = { error ->
+                        "Health check thất bại: ${error.javaClass.simpleName}: ${error.message ?: "không có chi tiết"}. Xem nhật ký chẩn đoán."
+                    }
+                )
+            } finally {
+                isCheckingR1 = false
+            }
+        }
+    }
+
+    fun getDiagnosticsText(): String {
+        val dateStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+        return buildString {
+            append("=== MUSE R1 DIAGNOSTICS ($dateStr) ===\n")
+            append("Speaker: $speakerIp\n")
+            append("Status: $status\n")
+            append("------------------------------------------\n")
+            diagnosticLogs.forEach { append(it).append('\n') }
         }
     }
 
