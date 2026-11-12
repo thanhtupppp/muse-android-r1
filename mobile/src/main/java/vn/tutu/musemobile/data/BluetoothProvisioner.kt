@@ -13,6 +13,7 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import java.io.ByteArrayOutputStream
 import java.util.UUID
 
 class BluetoothProvisioner(private val context: Context) {
@@ -83,15 +84,15 @@ class BluetoothProvisioner(private val context: Context) {
     // Server replies with one newline-terminated OK or ERROR line. EOF is never success.
     private fun readResponse(socket: BluetoothSocket) {
         val input = socket.inputStream
-        val response = StringBuilder()
-        while (response.length < MAX_RESPONSE_BYTES) {
+        val response = ByteArrayOutputStream()
+        while (response.size() < MAX_RESPONSE_BYTES) {
             val next = input.read()
             if (next == -1) throw IOException("R1 đóng Bluetooth trước khi xác nhận cấu hình Wi-Fi")
             if (next == 10) break
-            if (next != 13) response.append(next.toChar())
+            if (next != 13) response.write(next)
         }
-        if (response.length >= MAX_RESPONSE_BYTES) throw IOException("Phản hồi Bluetooth từ R1 vượt giới hạn")
-        val line = response.toString().trim()
+        if (response.size() >= MAX_RESPONSE_BYTES) throw IOException("Phản hồi Bluetooth từ R1 vượt giới hạn")
+        val line = response.toByteArray().toString(Charsets.UTF_8).trim()
         if (line == "OK") return
         if (line.startsWith("ERROR:", ignoreCase = true)) throw IOException("R1 từ chối cấu hình Wi-Fi: $line")
         throw IOException("Phản hồi Bluetooth không hợp lệ từ R1: ${line.ifEmpty { "<trống>" }}")
