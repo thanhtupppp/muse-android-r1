@@ -17,6 +17,7 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
@@ -152,12 +153,59 @@ class AgentService : Service() {
             Log.i(TAG, "Nhận CONFIRM_PAIRING_PRESS qua intent service (giả lập nút tròn, kênh ADB)")
             SpeakerButtonMonitor.notePress("adb_service")
         }
+        if (intent?.action == ACTION_PROBE_VOICE_CALL) {
+            runVoiceProbes()
+        }
+        maybeRunMicProbe()
         startDiscoveryResponder()
         startTelemetry()
         val forceReload = intent?.action == ACTION_RELOAD_MUSE_SESSION
         startMuseSession(forceRestart = forceReload)
         announceReadyWhenAvailable()
         return START_STICKY
+    }
+
+    @Volatile
+    private var micProbeRan = false
+
+    /** Mic probe chạy nền đúng một lần sau khi service khởi động. */
+    private fun maybeRunMicProbe() {
+        if (micProbeRan) return
+        micProbeRan = true
+        Thread {
+            try {
+                val mic = VoiceProbe.probeMicrophone()
+                MusePreferences.setVoiceMicProbe(this, mic.toString())
+            } catch (error: Exception) {
+                Log.e(TAG, "Mic probe lỗi", error)
+            }
+        }.start()
+    }
+
+    /** Chạy cả mic probe lẫn voice-call probe (theo yêu cầu qua ADB). */
+    private fun runVoiceProbes() {
+        Thread {
+            try {
+                val mic = VoiceProbe.probeMicrophone()
+                MusePreferences.setVoiceMicProbe(this, mic.toString())
+                Log.i(TAG, "Voice mic probe: $mic")
+            } catch (error: Exception) {
+                Log.e(TAG, "Mic probe lỗi", error)
+            }
+            val adapter = museSessionAdapter
+            if (adapter == null) {
+                Log.w(TAG, "Voice call probe bỏ qua: Muse session chưa chạy")
+                MusePreferences.setVoiceCallProbe(
+                    this,
+                    JSONObject()
+                        .put("accepted", false)
+                        .put("error", "NO_SESSION_ADAPTER")
+                        .toString()
+                )
+            } else {
+                adapter.probeVoiceCall()
+            }
+        }.start()
     }
 
     override fun onDestroy() {
@@ -337,6 +385,7 @@ class AgentService : Service() {
         private const val ACTION_RELOAD_MUSE_SESSION = "vn.tutu.muser1.ACTION_RELOAD_MUSE_SESSION"
         private const val ACTION_REOPEN_PAIRING_WINDOW = "vn.tutu.muser1.ACTION_REOPEN_PAIRING_WINDOW"
         private const val ACTION_CONFIRM_PAIRING_PRESS = "vn.tutu.muser1.ACTION_CONFIRM_PAIRING_PRESS"
+        private const val ACTION_PROBE_VOICE_CALL = "vn.tutu.muser1.ACTION_PROBE_VOICE_CALL"
         private const val HTTP_PROVISION_WINDOW_MS = 10 * 60 * 1000L
         private const val NOTIFICATION_ID = 1001
         private const val TELEMETRY_INTERVAL_SECONDS = 30L
@@ -378,6 +427,22 @@ class AgentService : Service() {
         fun openHttpProvisionWindow() {
             httpProvisionWindowUntilMs =
                 System.currentTimeMillis() + HTTP_PROVISION_WINDOW_MS
+        }
+
+        /**
+         * Kích hoạt bộ probe Phase 0 của voice call qua ADB:
+         *   adb shell am startservice -n vn.tutu.muser1/.AgentService \
+         *     -a vn.tutu.muser1.ACTION_PROBE_VOICE_CALL
+         */
+        fun probeVoiceCall(context: Context) {
+            val intent = Intent(context, AgentService::class.java).apply {
+                action = ACTION_PROBE_VOICE_CALL
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(context, intent)
+            } else {
+                context.startService(intent)
+            }
         }
 
         internal fun setCurrentBleServer(server: MuseBleServer?) {

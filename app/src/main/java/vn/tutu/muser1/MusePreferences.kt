@@ -20,6 +20,10 @@ object MusePreferences {
     private const val KEY_PROVISION_TOKEN = "provision_token"
     private const val KEY_LAST_REFRESH_OK_MS = "muse_last_refresh_ok_ms"
     private const val KEY_LAST_REFRESH_ATTEMPT_MS = "muse_last_refresh_attempt_ms"
+    private const val KEY_VOICE_APP_ID = "voice_app_id"
+    private const val KEY_VOICE_MIC_PROBE = "voice_mic_probe"
+    private const val KEY_VOICE_CALL_PROBE = "voice_call_probe"
+    const val DEFAULT_VOICE_APP_ID = "hatch-web"
 
     const val DEFAULT_NOISE_HOST = "hatch.metaaivm.com"
 
@@ -210,6 +214,40 @@ object MusePreferences {
             .edit()
             .putLong(KEY_LAST_REFRESH_ATTEMPT_MS, timeMs)
             .apply()
+    }
+
+    /** Voice app id đặt trên query của upgrade Noise cho phiên voice call (mặc định như SDK CLI). */
+    fun getVoiceAppId(context: Context): String {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_VOICE_APP_ID, DEFAULT_VOICE_APP_ID)
+            .orEmpty()
+            .ifEmpty { DEFAULT_VOICE_APP_ID }
+    }
+
+    fun setVoiceMicProbe(context: Context, json: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_VOICE_MIC_PROBE, json)
+            .apply()
+    }
+
+    fun getVoiceMicProbe(context: Context): String {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_VOICE_MIC_PROBE, "")
+            .orEmpty()
+    }
+
+    fun setVoiceCallProbe(context: Context, json: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_VOICE_CALL_PROBE, json)
+            .apply()
+    }
+
+    fun getVoiceCallProbe(context: Context): String {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_VOICE_CALL_PROBE, "")
+            .orEmpty()
     }
 
     fun getNoiseHost(context: Context): String {

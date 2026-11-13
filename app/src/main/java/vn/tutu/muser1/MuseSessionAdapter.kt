@@ -9,9 +9,14 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
@@ -67,6 +72,20 @@ class MuseSessionAdapter(
 
     private val transportSendLock = Any()
     private val invokeExecutor: ExecutorService = Executors.newFixedThreadPool(2)
+
+    /**
+     * Định tuyến frame cho các stream phụ (không phải /link-control): vòng
+     * lặp đọc của phiên offer frame vào hàng đợi đã đăng ký theo streamId.
+     * Hiện dùng cho probe voice call (Phase 0); VoiceCallEngine sau này
+     * cũng đi qua đây hoặc qua phiên voice riêng.
+     */
+    private val auxStreams = ConcurrentHashMap<Long, LinkedBlockingQueue<ServiceFrame>>()
+
+    @Volatile
+    private var activeTransport: NoiseTransport? = null
+
+    @Volatile
+    private var activeWs: WebSocket? = null
 
     @Volatile
     private var webSocket: WebSocket? = null
@@ -362,6 +381,8 @@ class MuseSessionAdapter(
             Log.i(TAG, "Noise XX handshake hoàn tất với ${target.noiseHost} (vm=${target.vmId})")
 
             val transport = NoiseTransport(ciphers.sendCipher, ciphers.recvCipher)
+            activeTransport = transport
+            activeWs = ws
 
             // Bước 2: Mở stream POST /link-control và gửi link.register
             val registerId = UUID.randomUUID().toString()
@@ -401,7 +422,12 @@ class MuseSessionAdapter(
                 when (event) {
                     is WsEvent.Binary -> {
                         val frame = transport.decryptFrame(event.bytes) ?: continue
-                        if (frame.streamId != controlStreamId) continue
+                        if (frame.streamId != controlStreamId) {
+                            // Stream phụ (probe voice call...): giao cho
+                            // hàng đợi đã đăng ký, không nuốt mất frame.
+                            auxStreams[frame.streamId]?.offer(frame)
+                            continue
+                        }
                         frame.reset?.let { reset ->
                             Log.w(TAG, "Control stream bị reset: code=${reset.code} reason=${reset.reason}")
                             return closeAndFail(ws, "STREAM_RESET_${reset.code}", SessionOutcome.CLOSED)
@@ -537,9 +563,203 @@ class MuseSessionAdapter(
         return true
     }
 
+    /**
+     * Phase 0 của voice call (xem VOICE_CALL_DESIGN.md): thử mở stream
+     * `/voice/realtime` NGAY TRÊN phiên chính đang chạy (phương án A — bản
+     * đầy đủ sẽ dùng phiên voice riêng kèm app id), gửi admission +
+     * capability offer đúng định dạng SDK, chờ readiness tối đa 15 giây,
+     * rồi end-call và đóng stream sạch sẽ.
+     *
+     * Kết quả trả về mô tả VM chấp nhận tới đâu (HTTP status, các loại sự
+     * kiện NDJSON nhận được, có session_id hay không, end-call ack) để
+     * quyết định hướng Phase 1. Chạy trên thread của người gọi — KHÔNG gọi
+     * từ vòng lặp đọc của phiên.
+     */
+    fun probeVoiceCall(): JSONObject {
+        val result = JSONObject()
+            .put("probed_at_ms", System.currentTimeMillis())
+            .put("mode", "shared_session")
+        val transport = activeTransport
+        val ws = activeWs
+        if (transport == null || ws == null || !controlRegistered) {
+            return result.put("accepted", false).put("error", "SESSION_NOT_READY")
+        }
+
+        val callId = UUID.randomUUID().toString()
+        val startedAtMs = System.currentTimeMillis()
+        result.put("call_id", callId)
+        var streamId = -1L
+        var endCallStreamId = -1L
+        var admissionSent = false
+
+        try {
+            val (sid, openFrames) = transport.startStreamRequest(
+                "POST",
+                "/voice/realtime?call_id=$callId",
+                headers = listOf(NoiseHeader("Content-Type", "application/x-ndjson; charset=utf-8"))
+            )
+            streamId = sid
+            val queue = LinkedBlockingQueue<ServiceFrame>()
+            auxStreams[streamId] = queue
+
+            synchronized(transportSendLock) {
+                if (!sendBinaryFramesLocked(ws, openFrames)) {
+                    return result.put("accepted", false).put("error", "STREAM_OPEN_SEND_FAILED")
+                }
+                val start = JSONObject()
+                    .put("type", "hatch.voice.call.start")
+                    .put("call_id", callId)
+                    .put("device", "mcu-wearable")
+                    .put("device_id", MusePreferences.getMuseIdentity(context).nodeId)
+                    .put("call_media_type", "audio")
+                    .put("proactive_greeting_enabled", false)
+                val offer = JSONObject()
+                    .put("type", "hatch.voice.capability.offer")
+                    .put("end_call_stop", 1)
+                // Cuộc gọi gắn vào main chat theo quyết định thiết kế:
+                // không gửi thread_id.
+                val ndjson = (start.toString() + "\n" + offer.toString() + "\n")
+                    .toByteArray(Charsets.UTF_8)
+                if (!sendBinaryFramesLocked(ws, transport.encryptBodyChunk(streamId, ndjson))) {
+                    return result.put("accepted", false).put("error", "ADMISSION_SEND_FAILED")
+                }
+                admissionSent = true
+            }
+
+            // Chờ phản hồi readiness từ VM.
+            val deadline = System.currentTimeMillis() + 15_000
+            val bodyText = StringBuilder()
+            var httpStatus = -1
+            var resetCode: Int? = null
+            var streamEnded = false
+            while (System.currentTimeMillis() < deadline && !streamEnded) {
+                val frame = queue.poll(500, TimeUnit.MILLISECONDS) ?: continue
+                frame.reset?.let { resetCode = it.code }
+                frame.response?.let { resp ->
+                    httpStatus = resp.status
+                    bodyText.append(String(resp.body, Charsets.UTF_8))
+                    if (resp.endBody) streamEnded = true
+                }
+                frame.bodyChunk?.let { chunk ->
+                    bodyText.append(String(chunk.data, Charsets.UTF_8))
+                    if (chunk.endBody) streamEnded = true
+                }
+            }
+
+            val eventTypes = JSONArray()
+            var sessionIdPresent = false
+            var ready = false
+            for (line in bodyText.split('\n')) {
+                val trimmed = line.trim()
+                if (trimmed.isEmpty()) continue
+                try {
+                    val event = JSONObject(trimmed)
+                    val type = event.optString("type")
+                    if (type.isNotEmpty()) eventTypes.put(type)
+                    if (event.has("session_id") && !event.isNull("session_id")) {
+                        sessionIdPresent = true
+                        ready = true
+                    }
+                    if (event.optString("call_id") == callId &&
+                        type.contains("ready", ignoreCase = true)
+                    ) {
+                        ready = true
+                    }
+                } catch (_: Exception) {
+                    // Dòng không phải JSON độc lập (NDJSON bị cắt giữa chunk):
+                    // bỏ qua, các sự kiện đầy đủ vẫn được ghi nhận.
+                }
+            }
+
+            result
+                .put("http_status", httpStatus)
+                .put("event_types", eventTypes)
+                .put("session_id_present", sessionIdPresent)
+                .put("ready", ready)
+            resetCode?.let { result.put("reset_code", it) }
+            result.put("accepted", httpStatus in 200..299 && resetCode == null)
+
+            // End-call theo giao thức mỗi khi admission đã được gửi, kể cả
+            // khi readiness không tới — tránh để cuộc gọi ma phía VM.
+            if (admissionSent) {
+                val endBody = JSONObject()
+                    .put("call_id", callId)
+                    .put("call_started_at", isoUtc(startedAtMs))
+                    .put("call_ended_at", isoUtc(System.currentTimeMillis()))
+                val (eid, endFrames) = transport.encryptHttpRequest(
+                    "POST",
+                    "/voice/end-call",
+                    endBody.toString().toByteArray(Charsets.UTF_8),
+                    headers = listOf(NoiseHeader("Content-Type", "application/json"))
+                )
+                endCallStreamId = eid
+                val endQueue = LinkedBlockingQueue<ServiceFrame>()
+                auxStreams[endCallStreamId] = endQueue
+                synchronized(transportSendLock) {
+                    sendBinaryFramesLocked(ws, endFrames)
+                }
+                var endHttp = -1
+                val endText = StringBuilder()
+                val endDeadline = System.currentTimeMillis() + 5_000
+                var endDone = false
+                while (System.currentTimeMillis() < endDeadline && !endDone) {
+                    val frame = endQueue.poll(500, TimeUnit.MILLISECONDS) ?: continue
+                    frame.response?.let { resp ->
+                        endHttp = resp.status
+                        endText.append(String(resp.body, Charsets.UTF_8))
+                        if (resp.endBody) endDone = true
+                    }
+                    frame.bodyChunk?.let { chunk ->
+                        endText.append(String(chunk.data, Charsets.UTF_8))
+                        if (chunk.endBody) endDone = true
+                    }
+                }
+                var endAck = false
+                try {
+                    val endJson = JSONObject(endText.toString())
+                    endAck = endJson.optBoolean("ok", false) ||
+                        endJson.optJSONObject("result")?.optBoolean("ok", false) == true
+                } catch (_: Exception) {
+                }
+                result
+                    .put("end_call_http", endHttp)
+                    .put("end_call_ack", endAck)
+            }
+        } catch (error: Exception) {
+            Log.e(TAG, "Voice call probe lỗi", error)
+            result.put("accepted", false).put("error", error.javaClass.simpleName)
+        } finally {
+            if (streamId > 0) {
+                auxStreams.remove(streamId)
+                try {
+                    synchronized(transportSendLock) {
+                        sendBinaryFramesLocked(ws, transport.encryptReset(streamId, "probe_done"))
+                    }
+                } catch (_: Exception) {
+                }
+            }
+            if (endCallStreamId > 0) {
+                auxStreams.remove(endCallStreamId)
+            }
+            MusePreferences.setVoiceCallProbe(context, result.toString())
+            Log.i(TAG, "Voice call probe: $result")
+        }
+        return result
+    }
+
+    private fun isoUtc(timeMs: Long): String {
+        val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+        format.timeZone = TimeZone.getTimeZone("UTC")
+        return format.format(java.util.Date(timeMs))
+    }
+
     private fun closeAndFail(ws: WebSocket, error: String, outcome: SessionOutcome): SessionOutcome {
         lastError = error
         controlRegistered = false
+        if (activeWs === ws) {
+            activeTransport = null
+            activeWs = null
+        }
         try {
             ws.close(1000, error.take(80))
         } catch (_: Exception) {

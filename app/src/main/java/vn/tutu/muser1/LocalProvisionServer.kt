@@ -323,6 +323,15 @@ class LocalProvisionServer(
         }
     }
 
+    private fun parseJsonOrEmpty(raw: String): JSONObject {
+        if (raw.isBlank()) return JSONObject()
+        return try {
+            JSONObject(raw)
+        } catch (_: Exception) {
+            JSONObject()
+        }
+    }
+
     private fun healthResponse(): JSONObject {
         return JSONObject()
             .put("ok", true)
@@ -360,6 +369,15 @@ class LocalProvisionServer(
             .put("has_muse_token", MusePreferences.getMuseToken(context).isNotEmpty())
             .put("has_direct_token", MusePreferences.hasDirectConfig(context))
             .put("bluetooth", btInfo)
+            // Phase 0 voice call: kết quả probe mic + probe stream realtime
+            // gần nhất (rỗng nếu chưa chạy probe).
+            .put(
+                "voice",
+                JSONObject()
+                    .put("app_id", MusePreferences.getVoiceAppId(context))
+                    .put("mic_probe", parseJsonOrEmpty(MusePreferences.getVoiceMicProbe(context)))
+                    .put("call_probe", parseJsonOrEmpty(MusePreferences.getVoiceCallProbe(context)))
+            )
     }
 
     private fun json(response: JSONObject): Response {
