@@ -33,6 +33,15 @@
                 <action android:name="vn.tutu.muser1.PROVISION_WIFI" />
                 <action android:name="vn.tutu.muser1.CONFIGURE_MUSE" />
                 <action android:name="vn.tutu.muser1.CONFIGURE_AGENT" />
+                <action android:name="vn.tutu.muser1.CONFIRM_PAIRING_PRESS" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter android:priority="1000">
+                <action android:name="android.media.MEDIA_BUTTON" />
             </intent-filter>
         </receiver>
 

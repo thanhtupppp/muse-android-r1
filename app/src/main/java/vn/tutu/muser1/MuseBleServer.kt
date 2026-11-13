@@ -153,6 +153,7 @@ class MuseBleServer(
                     if (connectedDevice?.address == device.address) {
                         connectedDevice = null
                         notificationsEnabled = false
+                        SpeakerButtonMonitor.disarm()
                         rxAssembler.reset()
                         pairingProtocol?.resetSession()
                         notifyLatch?.countDown()
@@ -396,8 +397,27 @@ class MuseBleServer(
             firmwareVersion = BuildConfig.VERSION_NAME,
             sdkToken = existingSdkToken,
             onWifiScan = { scanWifiNetworks() },
-            onProvisionV2 = { req, sendStatus -> handleProvisionV2(req, sendStatus) }
+            onProvisionV2 = { req, sendStatus -> handleProvisionV2(req, sendStatus) },
+            onConfirmRequired = {
+                // confirm_required vừa được gửi: arm nút tròn trên loa và
+                // hẹn giờ huỷ phiên sau 60 giây nếu không ai bấm.
+                SpeakerButtonMonitor.arm()
+                scheduleConfirmTimeout(generation)
+            }
         )
+        SpeakerButtonMonitor.onArmedPress = {
+            val device = connectedDevice
+            val proto = pairingProtocol
+            if (device != null && proto != null) {
+                ensureExecutors()
+                bleRxExecutor.execute {
+                    if (proto.confirmActiveSession { json -> enqueueNotification(device, json) }) {
+                        SpeakerButtonMonitor.disarm()
+                        Log.i(TAG, "Đã xác nhận pair bằng nút tròn trên loa")
+                    }
+                }
+            }
+        }
         rxAssembler.reset()
 
         try {
@@ -552,6 +572,30 @@ class MuseBleServer(
         return advScheduler
     }
 
+    /**
+     * Sau khi arm nút xác nhận pair: quá 60 giây mà chưa bấm thì báo lỗi,
+     * huỷ phiên pair và ngắt central — giống confirm timeout của bản ESP32.
+     */
+    private fun scheduleConfirmTimeout(generation: Int) {
+        ensureAdvScheduler().schedule({
+            if (generation != startGeneration) return@schedule
+            val device = connectedDevice ?: return@schedule
+            val proto = pairingProtocol ?: return@schedule
+            ensureExecutors()
+            bleRxExecutor.execute {
+                if (proto.expireConfirmIfNeeded { json -> enqueueNotification(device, json) }) {
+                    SpeakerButtonMonitor.disarm()
+                    Log.w(TAG, "Hết 60s chờ bấm nút xác nhận pair: huỷ phiên và ngắt central")
+                    try {
+                        gattServer?.cancelConnection(device)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Lỗi ngắt central sau confirm timeout", e)
+                    }
+                }
+            }
+        }, MuseBlePairingProtocol.CONFIRM_PRESS_TIMEOUT_MS + CONFIRM_TIMEOUT_GRACE_MS, TimeUnit.MILLISECONDS)
+    }
+
     /** Hẹn giờ áp chính sách advertising sau cửa sổ pairing. */
     private fun scheduleAdvertisingPolicy(generation: Int) {
         advPolicyFuture?.cancel(false)
@@ -619,6 +663,8 @@ class MuseBleServer(
         serviceAddedLatch?.countDown()
         advPolicyFuture?.cancel(false)
         advPolicyFuture = null
+        SpeakerButtonMonitor.disarm()
+        SpeakerButtonMonitor.onArmedPress = null
 
         try {
             if (isAdvertising) {
@@ -806,6 +852,9 @@ class MuseBleServer(
         /** Cửa sổ pairing phát nhanh, cùng cỡ cửa sổ pair của SDK gốc. */
         private const val PAIRING_WINDOW_MS = 10 * 60_000L
         private const val POLICY_RECHECK_MS = 60_000L
+
+        /** Cộng thêm cho hạn bấm nút để message hết giờ kịp đi trước khi ngắt. */
+        private const val CONFIRM_TIMEOUT_GRACE_MS = 2_000L
 
         // Chuẩn Meta Muse Gadget
         const val SERVICE_UUID = "7fdd3d1c-38ea-46cf-8b46-314ecf5f240c"

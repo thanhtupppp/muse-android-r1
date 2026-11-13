@@ -4,8 +4,10 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.os.Build
 import android.os.Handler
@@ -96,6 +98,38 @@ class AgentService : Service() {
         isRunning = true
         Log.i(TAG, "Agent service created")
         bgExecutor = Executors.newScheduledThreadPool(2)
+        registerSpeakerButtonReceiver()
+    }
+
+    /**
+     * Đăng ký MediaButtonReceiver làm đầu nhận media button của hệ thống, để
+     * nút tròn trên đỉnh loa tới được Agent (phục vụ confirm_press khi pair).
+     * Dùng API legacy registerMediaButtonEventReceiver vì thiết bị chạy
+     * Android 5.1 / targetSdk 28.
+     */
+    @Suppress("DEPRECATION")
+    private fun registerSpeakerButtonReceiver() {
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+            audioManager.registerMediaButtonEventReceiver(
+                ComponentName(this, MediaButtonReceiver::class.java)
+            )
+            Log.i(TAG, "Đã đăng ký MediaButtonReceiver cho nút tròn trên loa")
+        } catch (e: Exception) {
+            Log.w(TAG, "Không đăng ký được media button receiver", e)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun unregisterSpeakerButtonReceiver() {
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+            audioManager.unregisterMediaButtonEventReceiver(
+                ComponentName(this, MediaButtonReceiver::class.java)
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Không huỷ được media button receiver", e)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -114,6 +148,8 @@ class AgentService : Service() {
     override fun onDestroy() {
         readyAnnouncementRequested = false
         handler.removeCallbacksAndMessages(null)
+        unregisterSpeakerButtonReceiver()
+        SpeakerButtonMonitor.disarm()
 
         telemetryFuture?.cancel(false)
         telemetryFuture = null

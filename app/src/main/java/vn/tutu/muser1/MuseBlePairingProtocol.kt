@@ -385,7 +385,14 @@ class MuseBlePairingProtocol(
     private val sdkToken: String? = null,
     private val random: SecureRandom = SecureRandom(),
     private val onWifiScan: () -> List<WifiEntry> = { emptyList() },
-    private val onProvisionV2: (ProvisionV2Request, sendStatus: (String) -> Unit) -> Boolean = { _, _ -> true }
+    private val onProvisionV2: (ProvisionV2Request, sendStatus: (String) -> Unit) -> Boolean = { _, _ -> true },
+    /**
+     * Được gọi khi policy là confirm_press và `confirm_required` đã được gửi:
+     * phía server arm nút vật lý từ thời điểm này — lần bấm TRƯỚC khi arm
+     * không được tính, giống bản ESP32 gốc (link_pairing_arm_confirmation).
+     */
+    private val onConfirmRequired: () -> Unit = {},
+    internal val confirmPressTimeoutMs: Long = CONFIRM_PRESS_TIMEOUT_MS
 ) {
     private val deviceIdLower = deviceId.lowercase()
     private val nodeIdLower = nodeId.lowercase()
@@ -412,6 +419,9 @@ class MuseBlePairingProtocol(
         const val PAIRING_AUTH = "none"
         const val POLICY_APP = "confirm_app"
         const val POLICY_PRESS = "confirm_press"
+
+        /** Thời gian chờ bấm nút vật lý sau confirm_required (bản gốc: 60s). */
+        const val CONFIRM_PRESS_TIMEOUT_MS = 60_000L
         const val RECORD_LABEL = "hatch-link ble setup v1"
         val SESSION_ID_LABEL = "hatch-link session id v1".toByteArray(Charsets.US_ASCII)
 
@@ -498,6 +508,9 @@ class MuseBlePairingProtocol(
     private enum class State {
         IDLE,
         WAIT_CLIENT_FINISHED,
+
+        /** Đã nhận client_finished (policy confirm_press), đang chờ bấm nút vật lý. */
+        WAIT_CONFIRM_PRESS,
         READY,
         PROVISIONING
     }
@@ -509,6 +522,8 @@ class MuseBlePairingProtocol(
     private var rxCounter = 0L
     private var txCounter = 0L
     private var plaintextStatusBlocked = false
+    private var activePolicy: String = POLICY_APP
+    private var confirmDeadlineMs: Long = 0L
 
     @Synchronized
     fun resetSession() {
@@ -521,6 +536,47 @@ class MuseBlePairingProtocol(
         txCounter = 0L
         state = State.IDLE
         plaintextStatusBlocked = false
+        activePolicy = POLICY_APP
+        confirmDeadlineMs = 0L
+    }
+
+    /** Đang chờ người dùng bấm nút vật lý để xác nhận pair hay không. */
+    @Synchronized
+    fun confirmationRequired(): Boolean =
+        state == State.WAIT_CONFIRM_PRESS && System.currentTimeMillis() <= confirmDeadlineMs
+
+    /**
+     * Người dùng đã bấm nút vật lý trên loa (chỉ hợp lệ sau khi
+     * [onConfirmRequired] đã arm). Đạt: chuyển READY và gửi pairing_confirmed.
+     */
+    @Synchronized
+    fun confirmActiveSession(emitJson: (String) -> Unit): Boolean {
+        if (state != State.WAIT_CONFIRM_PRESS) return false
+        if (System.currentTimeMillis() > confirmDeadlineMs) {
+            expireConfirmLocked(emitJson)
+            return false
+        }
+        state = State.READY
+        confirmDeadlineMs = 0L
+        emitPairingConfirmed(emitJson)
+        return true
+    }
+
+    /**
+     * Nếu cửa sổ chờ bấm nút đã hết hạn thì gửi lỗi và huỷ phiên.
+     * Trả về true nếu phiên vừa bị huỷ vì hết giờ.
+     */
+    @Synchronized
+    fun expireConfirmIfNeeded(emitJson: (String) -> Unit): Boolean {
+        if (state != State.WAIT_CONFIRM_PRESS) return false
+        if (System.currentTimeMillis() <= confirmDeadlineMs) return false
+        expireConfirmLocked(emitJson)
+        return true
+    }
+
+    private fun expireConfirmLocked(emitJson: (String) -> Unit) {
+        emitEncryptedOrPlainStatus("error_pairing_confirm_timeout", emitJson)
+        resetSession()
     }
 
     /**
@@ -538,6 +594,11 @@ class MuseBlePairingProtocol(
     }
 
     private fun dispatch(root: Map<String, Any?>, decrypted: Boolean, emitJson: (String) -> Unit) {
+        // Cửa sổ chờ bấm nút hết hạn: huỷ phiên trước khi xử lý lệnh mới.
+        if (state == State.WAIT_CONFIRM_PRESS && System.currentTimeMillis() > confirmDeadlineMs) {
+            expireConfirmIfNeeded(emitJson)
+            return
+        }
         val action = root["action"] as? String ?: ""
         if (!decrypted && action == "get_device_info") {
             val info = linkedMapOf<String, Any?>(
@@ -689,6 +750,8 @@ class MuseBlePairingProtocol(
         sessionIdB64 = Base64UrlCodec.encode(sidHash.copyOfRange(0, 16))
         rxCounter = 0L
         txCounter = 0L
+        activePolicy = requestedPolicy
+        confirmDeadlineMs = 0L
         state = State.WAIT_CLIENT_FINISHED
         plaintextStatusBlocked = true
 
@@ -794,7 +857,21 @@ class MuseBlePairingProtocol(
             resetSession()
             return
         }
+        if (activePolicy == POLICY_PRESS) {
+            // Giống bản ESP32 gốc: gửi "confirm_required" TRƯỚC, rồi mới arm
+            // nút vật lý. Lần bấm trước thời điểm arm không được tính, để
+            // pairing_confirmed không bao giờ vượt qua record mà mobile chờ.
+            state = State.WAIT_CONFIRM_PRESS
+            confirmDeadlineMs = System.currentTimeMillis() + confirmPressTimeoutMs
+            emitEncryptedStatus("confirm_required", emitJson)
+            onConfirmRequired()
+            return
+        }
         state = State.READY
+        emitPairingConfirmed(emitJson)
+    }
+
+    private fun emitPairingConfirmed(emitJson: (String) -> Unit) {
         val confirmed = linkedMapOf<String, Any?>(
             "type" to "status",
             "status" to "pairing_confirmed"

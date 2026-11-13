@@ -16,6 +16,10 @@ import android.util.Log
  * adb shell am broadcast -a vn.tutu.muser1.CONFIGURE_MUSE \
  *   --es muse_token "mgst_..."
  * (hoặc dùng action vn.tutu.muser1.CONFIGURE_AGENT)
+ *
+ * Giả lập bấm nút tròn trên loa (xác nhận pair confirm_press, để kiểm chứng
+ * cơ chế khi chưa chắc nút thật phát keycode nào):
+ * adb shell am broadcast -a vn.tutu.muser1.CONFIRM_PAIRING_PRESS
  */
 class ProvisionReceiver : BroadcastReceiver() {
 
@@ -23,6 +27,10 @@ class ProvisionReceiver : BroadcastReceiver() {
         when (intent.action) {
             ACTION_PROVISION_WIFI -> provisionWifi(context, intent)
             ACTION_CONFIGURE_MUSE, ACTION_CONFIGURE_AGENT -> configureMuse(context, intent)
+            ACTION_CONFIRM_PAIRING_PRESS -> {
+                Log.i(TAG, "Nhận CONFIRM_PAIRING_PRESS qua broadcast (giả lập nút tròn)")
+                SpeakerButtonMonitor.notePress("adb_broadcast")
+            }
         }
     }
 
@@ -72,6 +80,7 @@ class ProvisionReceiver : BroadcastReceiver() {
         const val ACTION_PROVISION_WIFI = "vn.tutu.muser1.PROVISION_WIFI"
         const val ACTION_CONFIGURE_MUSE = "vn.tutu.muser1.CONFIGURE_MUSE"
         const val ACTION_CONFIGURE_AGENT = "vn.tutu.muser1.CONFIGURE_AGENT"
+        const val ACTION_CONFIRM_PAIRING_PRESS = "vn.tutu.muser1.CONFIRM_PAIRING_PRESS"
 
         const val EXTRA_SSID = "ssid"
         const val EXTRA_PASSWORD = "password"
