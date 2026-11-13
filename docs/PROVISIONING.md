@@ -46,7 +46,7 @@ Mọi đường truyền (HTTP, SPP, BLE, ADB) dùng cùng một bộ pha trong 
 
 Bản ghi lần thử gần nhất nằm ở `GET /status` → `wifi_provision`: `{ssid, at_ms, phase, via (http|spp|ble|adb|wifi_use…), ok, ip | code, config_saved}`. Mobile thăm dò bản ghi này trong lúc chờ loa lên mạng nhà: gặp `phase: "failed"` của đúng lần thử là dừng chờ ngay và hiển thị mã lỗi kèm hướng dẫn (`ProvisioningHelp` phía Mobile ánh xạ từng mã → câu hướng dẫn tiếng Việt), gặp `connected` thì lấy luôn IP loa báo.
 
-Log và thông báo lỗi hai phía đều đi qua `SecretRedactor` (che password/token/secret/api-key/authorization, Bearer và token `mgst_...`) trước khi hiển thị hoặc copy ra ngoài.
+Log và thông báo lỗi hai phía đều đi qua `SecretRedactor` (che password/token/secret/api-key/authorization, Bearer và token `mgst_...`) trước khi hiển thị hoặc copy ra ngoài. Giá trị bị che được thay bằng vân tay debug `***(len=N, sha256:xxxxxxxx)` (8 ký tự đầu của SHA-256) để đối chiếu hai đầu có đang dùng cùng một bí mật hay không mà không lộ giá trị.
 
 ## Quét Wi-Fi từ loa và quản lý mạng đã lưu (HTTP :8080)
 
