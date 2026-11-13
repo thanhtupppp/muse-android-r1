@@ -96,6 +96,10 @@ class AgentService : Service() {
     override fun onCreate() {
         super.onCreate()
         isRunning = true
+        // Mở cửa sổ cấu hình HTTP 10 phút sau mỗi lần Agent khởi động (cùng
+        // nhịp với cửa sổ pairing BLE): chủ loa ở gần loa dùng Mobile cấu
+        // hình lần đầu / lấy lại provision token mà không bị khoá ngoài.
+        openHttpProvisionWindow()
         Log.i(TAG, "Agent service created")
         bgExecutor = Executors.newScheduledThreadPool(2)
         registerSpeakerButtonReceiver()
@@ -139,6 +143,8 @@ class AgentService : Service() {
         startMuseBleServer()
         if (intent?.action == ACTION_REOPEN_PAIRING_WINDOW) {
             museBleServer?.reopenPairingWindow()
+            // Mở luôn cửa sổ HTTP: ADB/người ở gần loa là bằng chứng chủ sở hữu.
+            openHttpProvisionWindow()
         }
         if (intent?.action == ACTION_CONFIRM_PAIRING_PRESS) {
             Log.i(TAG, "Nhận CONFIRM_PAIRING_PRESS qua intent service (giả lập nút tròn, kênh ADB)")
@@ -328,6 +334,7 @@ class AgentService : Service() {
         private const val ACTION_RELOAD_MUSE_SESSION = "vn.tutu.muser1.ACTION_RELOAD_MUSE_SESSION"
         private const val ACTION_REOPEN_PAIRING_WINDOW = "vn.tutu.muser1.ACTION_REOPEN_PAIRING_WINDOW"
         private const val ACTION_CONFIRM_PAIRING_PRESS = "vn.tutu.muser1.ACTION_CONFIRM_PAIRING_PRESS"
+        private const val HTTP_PROVISION_WINDOW_MS = 10 * 60 * 1000L
         private const val NOTIFICATION_ID = 1001
         private const val TELEMETRY_INTERVAL_SECONDS = 30L
         private const val READY_ANNOUNCEMENT_DELAY_MS = 800L
@@ -351,6 +358,24 @@ class AgentService : Service() {
         @Volatile
         var currentBleServer: MuseBleServer? = null
             private set
+
+        /**
+         * Mốc thời gian (ms) mà trước đó HTTP :8080 tạm thời không bắt
+         * provision token dù loa đã cấu hình: mở khi Agent khởi động và khi
+         * có lệnh mở lại cửa sổ pairing (đường ADB/chủ loa ở gần). Xem
+         * LocalProvisionServer.isAuthorized.
+         */
+        @Volatile
+        var httpProvisionWindowUntilMs: Long = 0L
+            private set
+
+        fun isHttpProvisionWindowOpen(): Boolean =
+            System.currentTimeMillis() < httpProvisionWindowUntilMs
+
+        fun openHttpProvisionWindow() {
+            httpProvisionWindowUntilMs =
+                System.currentTimeMillis() + HTTP_PROVISION_WINDOW_MS
+        }
 
         internal fun setCurrentBleServer(server: MuseBleServer?) {
             currentBleServer = server

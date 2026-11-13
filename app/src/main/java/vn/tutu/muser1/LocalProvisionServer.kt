@@ -91,6 +91,10 @@ class LocalProvisionServer(
      */
     private fun isAuthorized(session: IHTTPSession): Boolean {
         if (!MusePreferences.isMusePaired(context)) return true
+        // Cửa sổ cấu hình 10 phút (mở lúc Agent khởi động hoặc khi chủ loa mở
+        // lại cửa sổ pairing qua ADB): cho Mobile cấu hình lần đầu/lấy lại
+        // token kể cả với loa đã pair từ trước khi có cơ chế token này.
+        if (AgentService.isHttpProvisionWindowOpen()) return true
         val expected = MusePreferences.ensureProvisionToken(context)
         val provided = session.headers["x-muse-token"]?.trim().orEmpty()
         return provided.isNotEmpty() && provided == expected

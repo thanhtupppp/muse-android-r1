@@ -488,7 +488,10 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
             bluetoothProvisioner.provisionWifi(
                 device = device,
                 ssid = network.ssid,
-                password = password
+                password = password,
+                // Loa đã cấu hình Muse sẽ từ chối SPP không có token (kênh SPP
+                // giờ cũng kiểm tra provision token như HTTP :8080).
+                token = authToken()
             ).fold(
                 onSuccess = { ip ->
                     if (!ip.isNullOrBlank()) {
