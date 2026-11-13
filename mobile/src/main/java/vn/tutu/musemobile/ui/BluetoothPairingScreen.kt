@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,12 +20,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -33,12 +35,17 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import vn.tutu.musemobile.data.BluetoothProvisioner
 import vn.tutu.musemobile.domain.ProvisioningViewModel
+import vn.tutu.musemobile.ui.components.ChipKind
+import vn.tutu.musemobile.ui.components.InfoBanner
+import vn.tutu.musemobile.ui.components.LoadingButton
+import vn.tutu.musemobile.ui.components.StatusChip
 
 @SuppressLint("MissingPermission")
 @Composable
@@ -50,7 +57,8 @@ fun BluetoothPairingScreen(
     val context = LocalContext.current
     val provisioner = remember { BluetoothProvisioner(viewModel.getApplication()) }
     val devices = remember { mutableStateListOf<BluetoothDevice>() }
-    var status by remember { mutableStateOf("Quét để tìm loa Phicomm R1.") }
+    var status by remember { mutableStateOf("Bấm quét để tìm loa Phicomm R1 ở gần.") }
+    var scanning by remember { mutableStateOf(false) }
 
     val receiver = remember {
         object : BroadcastReceiver() {
@@ -84,7 +92,10 @@ fun BluetoothPairingScreen(
         }
         onDispose {
             provisioner.cancelDiscovery()
-            try { context.unregisterReceiver(receiver) } catch (_: Exception) {}
+            try {
+                context.unregisterReceiver(receiver)
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -104,57 +115,133 @@ fun BluetoothPairingScreen(
             val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
             } else {
-                arrayOf(Manifest.permission.BLUETOOTH, Manifest.permission.BLUETOOTH_ADMIN,
-                    Manifest.permission.ACCESS_FINE_LOCATION)
+                arrayOf(
+                    Manifest.permission.BLUETOOTH, Manifest.permission.BLUETOOTH_ADMIN,
+                    Manifest.permission.ACCESS_FINE_LOCATION
+                )
             }
             permissionLauncher.launch(permissions)
         }
     }
 
-    Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
-        Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp)
-        ) {
-            Text("Kết nối Phicomm R1", style = MaterialTheme.typography.headlineSmall)
-            Spacer(Modifier.height(16.dp))
-            Text("Không cần ghép đôi thủ công. Bật Bluetooth trên loa rồi quét thiết bị.")
-            Spacer(Modifier.height(16.dp))
-            Button(
-                onClick = {
-                    devices.clear()
-                    devices.addAll(provisioner.getBondedR1Devices())
-                    status = if (provisioner.startDiscovery()) {
-                        "Đang quét thiết bị Bluetooth ở gần..."
-                    } else {
-                        "Không bắt đầu được quét. Kiểm tra Bluetooth và quyền ứng dụng."
-                    }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        Text(
+            text = "Kết nối Bluetooth với R1",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = "Không cần ghép đôi thủ công trong cài đặt hệ thống. Bật Bluetooth trên loa rồi quét.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+
+        LoadingButton(
+            text = "Quét thiết bị Bluetooth",
+            loadingText = "Đang quét thiết bị ở gần...",
+            loading = scanning,
+            icon = Icons.Filled.Bluetooth,
+            onClick = {
+                devices.clear()
+                devices.addAll(provisioner.getBondedR1Devices())
+                scanning = provisioner.startDiscovery()
+                status = if (scanning) {
+                    "Đang quét thiết bị Bluetooth ở gần..."
+                } else {
+                    "Không bắt đầu được quét. Kiểm tra Bluetooth và quyền ứng dụng."
+                }
+            }
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusChip(
+                text = when {
+                    scanning -> "ĐANG QUÉT"
+                    devices.isNotEmpty() -> "TÌM THẤY ${devices.size} THIẾT BỊ"
+                    else -> "CHƯA QUÉT"
                 },
+                kind = when {
+                    devices.isNotEmpty() -> ChipKind.SUCCESS
+                    scanning -> ChipKind.WARNING
+                    else -> ChipKind.NEUTRAL
+                }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        if (devices.isEmpty()) {
+            InfoBanner(
+                text = status,
                 modifier = Modifier.fillMaxWidth()
-            ) { Text("Quét thiết bị Bluetooth") }
-            Spacer(Modifier.height(16.dp))
+            )
+        } else {
             LazyColumn(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 items(devices, key = { it.address }) { device ->
-                    Card(
+                    ElevatedCard(
                         modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.large,
                         onClick = {
                             provisioner.cancelDiscovery()
+                            scanning = false
                             viewModel.selectBluetoothDevice(device)
                             onDeviceSelected()
                         }
                     ) {
-                        Column(Modifier.padding(16.dp)) {
-                            Text(device.name ?: "Phicomm R1")
-                            Text(device.address, style = MaterialTheme.typography.bodySmall)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Bluetooth,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.padding(horizontal = 6.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = device.name ?: "Phicomm R1",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = device.address,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.Filled.ChevronRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }
             }
-            Text(status)
-            Spacer(Modifier.height(12.dp))
-            TextButton(onClick = onBack) { Text("Quay lại") }
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = status,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+        androidx.compose.material3.TextButton(onClick = onBack) {
+            Text("Quay lại")
         }
     }
 }
