@@ -96,6 +96,13 @@ fun WifiPickerScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
+        if (viewModel.wifiListFromSpeaker) {
+            InfoBanner(
+                text = "Danh sách do chính loa quét — loa chỉ kết nối được mạng nó nhìn thấy ở đây."
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+        }
+
         if (networks.isEmpty()) {
             Box(
                 modifier = Modifier

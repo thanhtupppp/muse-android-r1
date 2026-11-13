@@ -17,7 +17,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * GET  http://192.168.43.1:8080/health
  * GET  http://192.168.43.1:8080/status
+ * GET  http://192.168.43.1:8080/wifi-scan    (loa tự quét Wi-Fi)
+ * GET  http://192.168.43.1:8080/wifi-saved   (mạng đã lưu trên loa)
  * POST http://192.168.43.1:8080/provision-wifi
+ * POST http://192.168.43.1:8080/wifi-forget  (quên một mạng đã lưu)
+ * POST http://192.168.43.1:8080/wifi-use     (chuyển sang mạng đã lưu)
  * POST http://192.168.43.1:8080/open-pairing-window
  */
 class LocalProvisionServer(
@@ -67,11 +71,25 @@ class LocalProvisionServer(
                 } else {
                     unauthorized()
                 }
+                // Loa tự quét Wi-Fi / liệt kê mạng đã lưu cho Mobile: cùng
+                // quy tắc xác thực như /status.
+                "/wifi-scan" -> if (isAuthorized(session)) {
+                    json(response = wifiScanResponse())
+                } else {
+                    unauthorized()
+                }
+                "/wifi-saved" -> if (isAuthorized(session)) {
+                    json(response = wifiSavedResponse())
+                } else {
+                    unauthorized()
+                }
                 else -> notFound()
             }
 
             Method.POST -> when (uri) {
                 "/provision-wifi" -> provisionWifi(session)
+                "/wifi-forget" -> wifiForget(session)
+                "/wifi-use" -> wifiUse(session)
                 "/configure-muse", "/pair" -> configureMuse(session)
                 "/unconfigure-muse" -> unconfigureMuse(session)
                 "/open-pairing-window", "/open-muse-pairing" -> openPairingWindow(session)
@@ -193,6 +211,194 @@ class LocalProvisionServer(
             Log.e(TAG, "Invalid provisioning request", error)
             badRequest("INVALID_REQUEST")
         }
+    }
+
+    /**
+     * Danh sách Wi-Fi do CHÍNH LOA quét (góc nhìn của loa), kèm cờ đã
+     * lưu/đang kết nối. Mobile ưu tiên danh sách này hơn kết quả điện
+     * thoại tự quét — điện thoại thấy mạng không có nghĩa là loa thấy.
+     * Handler chạy trên thread của NanoHTTPD nên lượt quét ~2,5 giây
+     * không chặn vòng đời service.
+     */
+    private fun wifiScanResponse(): JSONObject {
+        val networks = SpeakerWifi.scan(context)
+        val array = org.json.JSONArray()
+        for (entry in networks) {
+            array.put(
+                JSONObject()
+                    .put("ssid", entry.ssid)
+                    .put("rssi", entry.rssi)
+                    .put("security", entry.security)
+                    .put("has_2_4ghz", entry.has24Ghz)
+                    .put("has_5ghz", entry.has5Ghz)
+                    .put("saved", entry.saved)
+                    .put("connected", entry.connected)
+            )
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("source", "speaker")
+            .put("scanned_at_ms", System.currentTimeMillis())
+            .put("current_ssid", SpeakerWifi.currentSsid(context))
+            .put("networks", array)
+    }
+
+    /** Các mạng Wi-Fi đã lưu trong cấu hình của loa + mạng đang dùng. */
+    private fun wifiSavedResponse(): JSONObject {
+        val saved = SpeakerWifi.savedNetworks(context)
+        val array = org.json.JSONArray()
+        for (entry in saved) {
+            array.put(
+                JSONObject()
+                    .put("ssid", entry.ssid)
+                    .put("network_id", entry.networkId)
+                    .put("connected", entry.connected)
+            )
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("current_ssid", SpeakerWifi.currentSsid(context))
+            .put("current_ip", SpeakerWifi.currentIp(context))
+            .put("saved", array)
+    }
+
+    /** Đọc body JSON của POST và lấy trường ssid (rỗng nếu thiếu/hỏng). */
+    private fun readSsidFromBody(session: IHTTPSession): String? {
+        val contentLength = session.headers["content-length"]?.toLongOrNull() ?: 0L
+        if (contentLength > MAX_CONTENT_LENGTH_BYTES) return null
+        return try {
+            val content = mutableMapOf<String, String>()
+            session.parseBody(content)
+            val rawBody = content["postData"] ?: return null
+            JSONObject(rawBody).optString("ssid").trimEnd('\r', '\n').trim()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Quên một mạng đã lưu trên loa. Quên đúng mạng đang kết nối sẽ làm
+     * loa rớt mạng ngay, nên trường hợp đó được lên lịch sau 1,2 giây
+     * (kiểu provision-wifi) để response kịp về Mobile trước khi loa
+     * ngắt; quên mạng khác thì thực hiện ngay và trả kết quả thật.
+     */
+    private fun wifiForget(session: IHTTPSession): Response {
+        if (!isAuthorized(session)) {
+            return unauthorized()
+        }
+        val ssid = readSsidFromBody(session)
+        if (ssid.isNullOrEmpty()) {
+            return badRequest("EMPTY_SSID")
+        }
+
+        val saved = SpeakerWifi.savedNetworks(context)
+        val target = saved.firstOrNull { it.ssid == ssid }
+            ?: return badRequest("NOT_SAVED")
+
+        if (!target.connected) {
+            return when (val result = SpeakerWifi.forget(context, ssid)) {
+                is SpeakerWifi.ForgetResult.Success -> json(
+                    response = JSONObject()
+                        .put("ok", true)
+                        .put("forgotten", ssid)
+                        .put("was_connected", false)
+                        .put("scheduled", false)
+                )
+                is SpeakerWifi.ForgetResult.Failure -> badRequest(result.code)
+            }
+        }
+
+        if (!provisioningActive.compareAndSet(false, true)) {
+            return badRequest("PROVISIONING_IN_PROGRESS")
+        }
+        val executor = scheduledExecutor ?: run {
+            provisioningActive.set(false)
+            return badRequest("SERVER_STOPPING")
+        }
+        executor.schedule(
+            {
+                try {
+                    SpeakerWifi.forget(context, ssid)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Quên Wi-Fi đã lên lịch thất bại", e)
+                } finally {
+                    provisioningActive.set(false)
+                }
+            },
+            1200L,
+            TimeUnit.MILLISECONDS
+        )
+        Log.i(TAG, "Đã lên lịch quên mạng đang kết nối '$ssid' theo yêu cầu từ Mobile")
+        return json(
+            response = JSONObject()
+                .put("ok", true)
+                .put("forgotten", ssid)
+                .put("was_connected", true)
+                .put("scheduled", true)
+                .put("message", "Speaker will forget its current network and disconnect")
+        )
+    }
+
+    /**
+     * Chuyển loa sang một mạng ĐÃ LƯU (không cần mật khẩu). Việc chuyển
+     * làm loa đổi IP/rớt kết nối hiện tại nên được lên lịch sau 1,2
+     * giây như provision-wifi; kết quả thật được ghi vào
+     * wifi_provision (action=wifi_use) để Mobile đọc qua /status, kèm
+     * thăm dò /wifi-saved cho tới khi current_ssid khớp.
+     */
+    private fun wifiUse(session: IHTTPSession): Response {
+        if (!isAuthorized(session)) {
+            return unauthorized()
+        }
+        val ssid = readSsidFromBody(session)
+        if (ssid.isNullOrEmpty()) {
+            return badRequest("EMPTY_SSID")
+        }
+        val saved = SpeakerWifi.savedNetworks(context)
+        if (saved.none { it.ssid == ssid }) {
+            return badRequest("NOT_SAVED")
+        }
+        if (saved.firstOrNull { it.ssid == ssid }?.connected == true) {
+            val ip = SpeakerWifi.currentIp(context)
+            if (ip.isNotEmpty()) {
+                return json(
+                    response = JSONObject()
+                        .put("ok", true)
+                        .put("already_connected", true)
+                        .put("ssid", ssid)
+                        .put("ip", ip)
+                )
+            }
+        }
+
+        if (!provisioningActive.compareAndSet(false, true)) {
+            return badRequest("PROVISIONING_IN_PROGRESS")
+        }
+        val executor = scheduledExecutor ?: run {
+            provisioningActive.set(false)
+            return badRequest("SERVER_STOPPING")
+        }
+        executor.schedule(
+            {
+                try {
+                    WifiProvisioner.switchToSaved(context, ssid)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Chuyển mạng Wi-Fi đã lên lịch thất bại", e)
+                } finally {
+                    provisioningActive.set(false)
+                }
+            },
+            1200L,
+            TimeUnit.MILLISECONDS
+        )
+        Log.i(TAG, "Đã lên lịch chuyển sang mạng đã lưu '$ssid' theo yêu cầu từ Mobile")
+        return json(
+            response = JSONObject()
+                .put("ok", true)
+                .put("scheduled", true)
+                .put("ssid", ssid)
+                .put("message", "Speaker will switch to saved network $ssid")
+        )
     }
 
     /**

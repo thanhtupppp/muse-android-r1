@@ -877,45 +877,17 @@ class MuseBleServer(
         }
     }
 
-    @Suppress("DEPRECATION")
     private fun scanWifiNetworks(): List<MuseBlePairingProtocol.WifiEntry> {
-        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            ?: return emptyList()
-        val cached = runCatching { wifiManager.scanResults }.getOrNull().orEmpty()
-        val results = if (cached.isEmpty()) {
-            runCatching {
-                wifiManager.startScan()
-                Thread.sleep(1500)
-                wifiManager.scanResults
-            }.getOrNull().orEmpty()
-        } else {
-            cached
-        }
-        val bySsid = linkedMapOf<String, MuseBlePairingProtocol.WifiEntry>()
-        val connInfo = runCatching { wifiManager.connectionInfo }.getOrNull()
-        val currentSsid = connInfo?.ssid?.trim('"')?.takeIf { it.isNotEmpty() && it != "<unknown ssid>" }
-        if (currentSsid != null) {
-            bySsid[currentSsid] = MuseBlePairingProtocol.WifiEntry(
-                ssid = currentSsid,
-                rssi = connInfo.rssi,
-                secure = true
+        // Logic quét dùng chung với đường HTTP :8080 (SpeakerWifi) để loa
+        // là nguồn quét duy nhất: gộp theo SSID, phân loại bảo mật nhất
+        // quán. BLE chỉ cần thêm cờ secure (mạng không phải OPEN).
+        return SpeakerWifi.scan(context).map { entry ->
+            MuseBlePairingProtocol.WifiEntry(
+                ssid = entry.ssid,
+                rssi = entry.rssi,
+                secure = entry.security != "OPEN"
             )
         }
-        for (scan in results) {
-            val ssid = scan.SSID?.trim().orEmpty()
-            if (ssid.isEmpty()) continue
-            val secure = scan.capabilities?.let {
-                it.contains("WEP", ignoreCase = true) ||
-                    it.contains("PSK", ignoreCase = true) ||
-                    it.contains("EAP", ignoreCase = true) ||
-                    it.contains("SAE", ignoreCase = true)
-            } ?: true
-            val prev = bySsid[ssid]
-            if (prev == null || scan.level > prev.rssi) {
-                bySsid[ssid] = MuseBlePairingProtocol.WifiEntry(ssid = ssid, rssi = scan.level, secure = secure)
-            }
-        }
-        return bySsid.values.sortedByDescending { it.rssi }.take(20)
     }
 
     @Suppress("DEPRECATION")

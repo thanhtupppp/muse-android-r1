@@ -9,6 +9,7 @@ import android.util.Log
 object WifiProvisioner {
     private const val TAG = "MuseR1"
     private const val CONNECT_TIMEOUT_MS = 35_000L
+    private const val SWITCH_TIMEOUT_MS = 20_000L
     private const val CONNECT_POLL_INTERVAL_MS = 1_000L
     private const val RADIO_SWITCH_TIMEOUT_MS = 20_000L
     private const val WIFI_AP_STATE_ENABLED = 13
@@ -44,22 +45,97 @@ object WifiProvisioner {
             if (result is ProvisionResult.Failure && result.apTouched) {
                 restoreAp(manager)
             }
-            // Ghi lại kết quả để chẩn đoán từ xa: đường HTTP trả 200 ngay khi
-            // mới LÊN LỊCH kết nối nên app không bao giờ thấy mã lỗi thật
-            // (CONNECT_TIMEOUT, SOFTAP_DISABLE_FAILED...) — trước đây chúng
-            // chỉ tồn tại trong logcat của loa. /status mục wifi_provision.
-            runCatching {
-                val record = org.json.JSONObject()
-                    .put("ssid", ssid.trimEnd('\r', '\n'))
-                    .put("at_ms", System.currentTimeMillis())
-                when (result) {
-                    is ProvisionResult.Success -> record.put("ok", true).put("ip", result.ip)
-                    is ProvisionResult.Failure -> record.put("ok", false).put("code", result.code)
-                }
-                MusePreferences.setLastWifiProvision(context, record.toString())
-            }
+            recordOutcome(context, ssid, result, action = null)
             result
         }
+
+    /**
+     * Chuyển sang một mạng ĐÃ LƯU (không cần mật khẩu) — đường "Dùng" của
+     * mục quản lý mạng đã lưu trong Mobile. Thất bại thì cố quay về mạng
+     * trước đó để loa không mất kết nối oan.
+     */
+    fun switchToSaved(context: Context, ssid: String): ProvisionResult =
+        synchronized(lock) {
+            val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                ?: return ProvisionResult.Failure("NO_WIFI_MANAGER")
+            val result = switchAndWait(manager, ssid.trimEnd('\r', '\n').trim())
+            recordOutcome(context, ssid, result, action = "wifi_use")
+            result
+        }
+
+    // Ghi lại kết quả để chẩn đoán từ xa: đường HTTP trả 200 ngay khi
+    // mới LÊN LỊCH kết nối nên app không bao giờ thấy mã lỗi thật
+    // (CONNECT_TIMEOUT, SWITCH_TIMEOUT...) — trước đây chúng chỉ tồn tại
+    // trong logcat của loa. /status mục wifi_provision.
+    private fun recordOutcome(
+        context: Context,
+        ssid: String,
+        result: ProvisionResult,
+        action: String?
+    ) {
+        runCatching {
+            val record = org.json.JSONObject()
+                .put("ssid", ssid.trimEnd('\r', '\n'))
+                .put("at_ms", System.currentTimeMillis())
+            if (action != null) record.put("action", action)
+            when (result) {
+                is ProvisionResult.Success -> record.put("ok", true).put("ip", result.ip)
+                is ProvisionResult.Failure -> record.put("ok", false).put("code", result.code)
+            }
+            MusePreferences.setLastWifiProvision(context, record.toString())
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun switchAndWait(wifiManager: WifiManager, cleanSsid: String): ProvisionResult {
+        if (cleanSsid.isEmpty()) {
+            return ProvisionResult.Failure("EMPTY_SSID")
+        }
+        return try {
+            if (!wifiManager.isWifiEnabled) {
+                return ProvisionResult.Failure("WIFI_DISABLED")
+            }
+            val targetId = findExistingNetworkId(wifiManager, cleanSsid)
+            if (targetId == -1) {
+                return ProvisionResult.Failure("NOT_SAVED")
+            }
+            val previousId = runCatching { wifiManager.connectionInfo?.networkId }.getOrNull() ?: -1
+            if (previousId == targetId) {
+                val ipInt = runCatching { wifiManager.dhcpInfo?.ipAddress }.getOrNull() ?: 0
+                if (ipInt != 0) {
+                    return ProvisionResult.Success(ipToString(ipInt))
+                }
+            }
+
+            Log.i(TAG, "Chuyển sang mạng Wi-Fi đã lưu '$cleanSsid' (networkId=$targetId)")
+            wifiManager.disconnect()
+            if (!wifiManager.enableNetwork(targetId, true)) {
+                return ProvisionResult.Failure("ENABLE_NETWORK_FAILED")
+            }
+            wifiManager.saveConfiguration()
+            wifiManager.reconnect()
+
+            val ip = waitForConnection(wifiManager, cleanSsid, SWITCH_TIMEOUT_MS)
+            if (ip != null) {
+                ProvisionResult.Success(ip)
+            } else {
+                if (previousId != -1 && previousId != targetId) {
+                    Log.w(TAG, "Chuyển mạng thất bại; cố quay về mạng trước (networkId=$previousId)")
+                    runCatching {
+                        wifiManager.enableNetwork(previousId, true)
+                        wifiManager.reconnect()
+                    }
+                }
+                ProvisionResult.Failure("SWITCH_TIMEOUT")
+            }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            ProvisionResult.Failure("INTERRUPTED")
+        } catch (error: Exception) {
+            Log.e(TAG, "Chuyển mạng Wi-Fi exception", error)
+            ProvisionResult.Failure("EXCEPTION")
+        }
+    }
 
     fun connect(wifiManager: WifiManager, ssid: String, password: String): ProvisionResult =
         synchronized(lock) {
@@ -206,9 +282,13 @@ object WifiProvisioner {
     }
 
     @Suppress("DEPRECATION")
-    private fun waitForConnection(wifiManager: WifiManager, ssid: String): String? {
+    private fun waitForConnection(
+        wifiManager: WifiManager,
+        ssid: String,
+        timeoutMs: Long = CONNECT_TIMEOUT_MS
+    ): String? {
         val expected = quoteWifiValue(ssid)
-        val deadline = System.currentTimeMillis() + CONNECT_TIMEOUT_MS
+        val deadline = System.currentTimeMillis() + timeoutMs
 
         while (System.currentTimeMillis() < deadline) {
             val info = wifiManager.connectionInfo

@@ -26,6 +26,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,6 +40,9 @@ import androidx.compose.ui.unit.dp
 import vn.tutu.musemobile.domain.ProvisioningViewModel
 import vn.tutu.musemobile.ui.components.AnimatedProgress
 import vn.tutu.musemobile.ui.components.AppCard
+import vn.tutu.musemobile.ui.components.CardHeader
+import vn.tutu.musemobile.ui.components.ChipKind
+import vn.tutu.musemobile.ui.components.StatusChip
 import vn.tutu.musemobile.ui.components.InfoBanner
 import vn.tutu.musemobile.ui.components.LoadingButton
 import vn.tutu.musemobile.ui.components.LogConsole
@@ -61,6 +65,11 @@ fun SetupScreen(
     val clipboardManager = LocalClipboardManager.current
     var speakerIp by remember(viewModel.speakerIp) { mutableStateOf(viewModel.speakerIp) }
     var apkUrl by remember { mutableStateOf(DEFAULT_APK_URL) }
+    var pendingForgetSsid by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        viewModel.loadSavedWifi()
+    }
 
     Column(
         modifier = Modifier
@@ -286,6 +295,90 @@ fun SetupScreen(
                 enabled = !viewModel.isInstalling,
                 onClick = onOpenWifi
             )
+        }
+
+        // ===== Mạng Wi-Fi đã lưu trên loa =====
+        AppCard {
+            CardHeader(
+                icon = Icons.Filled.Wifi,
+                title = "Mạng Wi-Fi đã lưu trên loa",
+                subtitle = "Chuyển loa sang mạng đã lưu hoặc quên mạng cũ đang lỗi để loa khỏi tự quay lại."
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            if (viewModel.savedWifiNetworks.isEmpty()) {
+                Text(
+                    text = if (viewModel.isLoadingSavedWifi) {
+                        "Đang đọc danh sách mạng đã lưu từ loa..."
+                    } else {
+                        "Chưa đọc được mạng đã lưu nào. Hãy chắc chắn điện thoại đang liên lạc được với loa (cùng mạng hoặc hotspot của loa) rồi tải lại."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                viewModel.savedWifiNetworks.forEach { saved ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = saved.ssid,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold
+                            )
+                            if (saved.connected) {
+                                StatusChip(text = "Đang dùng", kind = ChipKind.SUCCESS)
+                            }
+                        }
+                        if (!saved.connected) {
+                            TextButton(
+                                onClick = { viewModel.useSavedWifi(saved.ssid) },
+                                enabled = !viewModel.isSwitchingWifi
+                            ) {
+                                Text("Dùng")
+                            }
+                        }
+                        TextButton(
+                            onClick = {
+                                if (pendingForgetSsid == saved.ssid) {
+                                    pendingForgetSsid = null
+                                    viewModel.forgetSavedWifi(saved.ssid)
+                                } else {
+                                    pendingForgetSsid = saved.ssid
+                                }
+                            }
+                        ) {
+                            Text(
+                                text = if (pendingForgetSsid == saved.ssid) "Bấm nữa để quên" else "Quên",
+                                color = if (pendingForgetSsid == saved.ssid) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
+                if (viewModel.savedWifiNetworks.any { it.connected }) {
+                    Text(
+                        text = "Quên đúng mạng đang dùng sẽ làm loa rớt mạng ngay sau khi xác nhận.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { viewModel.loadSavedWifi() },
+                enabled = !viewModel.isLoadingSavedWifi,
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Text("Tải lại danh sách")
+            }
         }
 
         if (viewModel.status.isNotBlank()) {

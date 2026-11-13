@@ -94,6 +94,25 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     var wifiNetworks by mutableStateOf<List<WifiNetwork>>(emptyList())
         private set
 
+    /** Danh sách wifiNetworks hiện tại do loa quét (true) hay điện thoại quét (false). */
+    var wifiListFromSpeaker by mutableStateOf(false)
+        private set
+
+    /** Các mạng Wi-Fi đã lưu trên loa (GET /wifi-saved). */
+    var savedWifiNetworks by mutableStateOf<List<SavedWifiNetwork>>(emptyList())
+        private set
+
+    /** SSID loa đang kết nối, theo /wifi-saved gần nhất. */
+    var savedWifiCurrentSsid by mutableStateOf("")
+        private set
+
+    var isLoadingSavedWifi by mutableStateOf(false)
+        private set
+
+    /** Đang chờ loa xác nhận chuyển mạng (sau POST /wifi-use). */
+    var isSwitchingWifi by mutableStateOf(false)
+        private set
+
     var selectedNetwork by mutableStateOf<WifiNetwork?>(null)
         private set
     var currentSpeakerIp by mutableStateOf("192.168.2.10")
@@ -508,14 +527,180 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    /** Các địa chỉ HTTP ứng viên của loa: IP đang đặt, rồi gateway hotspot. */
+    private fun speakerHttpCandidates(): List<String> =
+        listOf(speakerIp.trim(), "192.168.43.1").filter { it.isNotEmpty() }.distinct()
+
+    private fun parseSpeakerNetworks(json: JSONObject): List<WifiNetwork> {
+        val array = json.optJSONArray("networks") ?: return emptyList()
+        val result = mutableListOf<WifiNetwork>()
+        for (i in 0 until array.length()) {
+            val item = array.optJSONObject(i) ?: continue
+            val ssid = item.optString("ssid").trim()
+            if (ssid.isEmpty()) continue
+            val has24 = item.optBoolean("has_2_4ghz", false)
+            val has5 = item.optBoolean("has_5ghz", false)
+            result += WifiNetwork(
+                ssid = ssid,
+                // BSSID tổng hợp theo loa: phân biệt với kết quả điện thoại
+                // quét và giữ phép so sánh đã chọn trong WifiPicker đúng.
+                bssid = "speaker:$ssid",
+                frequencyMhz = if (has24) 2437 else 5180,
+                signalLevel = item.optInt("rssi", -80),
+                security = item.optString("security", "WPA2"),
+                has24Ghz = has24
+            )
+        }
+        return result
+    }
+
     fun refreshWifiNetworks() {
         viewModelScope.launch {
-            wifiNetworks = wifiScanner.scan()
+            // Ưu tiên danh sách do CHÍNH LOA quét: loa chỉ nối được mạng nó
+            // nhìn thấy, còn kết quả điện thoại quét có thể cũ hoặc thấy
+            // mạng ngoài tầm loa. Không hỏi được loa mới dùng điện thoại.
+            var speakerList: List<WifiNetwork> = emptyList()
+            for (ip in speakerHttpCandidates()) {
+                val json = apiClient.getWifiScan(ip, authToken()).getOrNull()
+                if (json != null) {
+                    speakerList = parseSpeakerNetworks(json)
+                    if (speakerList.isNotEmpty()) break
+                }
+            }
 
+            if (speakerList.isNotEmpty()) {
+                wifiNetworks = speakerList
+                wifiListFromSpeaker = true
+                status = "Loa quét thấy " + speakerList.size +
+                    " mạng Wi‑Fi (danh sách theo góc nhìn của loa)."
+                return@launch
+            }
+
+            wifiNetworks = wifiScanner.scan()
+            wifiListFromSpeaker = false
             status = if (wifiNetworks.isEmpty()) {
                 "Chưa có kết quả quét. Hãy cấp quyền vị trí và thử lại."
             } else {
-                "Đã tìm thấy " + wifiNetworks.size + " mạng Wi‑Fi."
+                "Đã tìm thấy " + wifiNetworks.size +
+                    " mạng Wi‑Fi (điện thoại quét; chưa hỏi được loa)."
+            }
+        }
+    }
+
+    private fun parseSavedNetworks(json: JSONObject): List<SavedWifiNetwork> {
+        val array = json.optJSONArray("saved") ?: return emptyList()
+        val result = mutableListOf<SavedWifiNetwork>()
+        for (i in 0 until array.length()) {
+            val item = array.optJSONObject(i) ?: continue
+            val ssid = item.optString("ssid").trim()
+            if (ssid.isEmpty()) continue
+            result += SavedWifiNetwork(
+                ssid = ssid,
+                networkId = item.optInt("network_id", -1),
+                connected = item.optBoolean("connected", false)
+            )
+        }
+        return result
+    }
+
+    /** Tải danh sách mạng đã lưu trên loa (im lặng nếu chưa gọi được loa). */
+    fun loadSavedWifi() {
+        if (isLoadingSavedWifi) return
+        isLoadingSavedWifi = true
+        viewModelScope.launch {
+            try {
+                for (ip in speakerHttpCandidates()) {
+                    val json = apiClient.getWifiSaved(ip, authToken()).getOrNull()
+                    if (json != null) {
+                        savedWifiNetworks = parseSavedNetworks(json)
+                        savedWifiCurrentSsid = json.optString("current_ssid", "")
+                        break
+                    }
+                }
+            } finally {
+                isLoadingSavedWifi = false
+            }
+        }
+    }
+
+    /** Quên một mạng đã lưu trên loa; quên mạng đang dùng sẽ làm loa rớt mạng. */
+    fun forgetSavedWifi(ssid: String) {
+        viewModelScope.launch {
+            var lastError: Throwable? = null
+            for (ip in speakerHttpCandidates()) {
+                val result = apiClient.forgetWifi(ip, ssid, authToken())
+                if (result.isSuccess) {
+                    val json = result.getOrNull()
+                    status = if (json?.optBoolean("was_connected") == true) {
+                        "Đã lên lịch quên mạng '$ssid' — loa sẽ ngắt kết nối và rớt mạng hiện tại."
+                    } else {
+                        "Đã quên mạng '$ssid' trên loa."
+                    }
+                    loadSavedWifi()
+                    return@launch
+                }
+                lastError = result.exceptionOrNull()
+            }
+            status = "Quên mạng '$ssid' thất bại: ${lastError?.message ?: "không liên lạc được loa"}"
+        }
+    }
+
+    /**
+     * Chuyển loa sang một mạng đã lưu. Loa lên lịch thực hiện và đổi IP
+     * ngay sau đó, nên hàm này thăm dò /wifi-saved vài nhịp để xác nhận
+     * current_ssid đã khớp; không khớp thì nói rõ là chưa xác nhận được
+     * thay vì báo thành công giả.
+     */
+    fun useSavedWifi(ssid: String) {
+        if (isSwitchingWifi) return
+        viewModelScope.launch {
+            var accepted: JSONObject? = null
+            var lastError: Throwable? = null
+            for (ip in speakerHttpCandidates()) {
+                val result = apiClient.useWifi(ip, ssid, authToken())
+                if (result.isSuccess) {
+                    accepted = result.getOrNull()
+                    break
+                }
+                lastError = result.exceptionOrNull()
+            }
+            val response = accepted
+            if (response == null) {
+                status = "Chuyển sang mạng '$ssid' thất bại: ${lastError?.message ?: "không liên lạc được loa"}"
+                return@launch
+            }
+            if (response.optBoolean("already_connected")) {
+                status = "Loa đang dùng sẵn mạng '$ssid' (${response.optString("ip")})."
+                loadSavedWifi()
+                return@launch
+            }
+
+            isSwitchingWifi = true
+            status = "Đã gửi lệnh chuyển mạng — đang chờ loa xác nhận dùng '$ssid'..."
+            try {
+                var confirmed = false
+                var attempts = 0
+                while (!confirmed && attempts < 10) {
+                    attempts++
+                    delay(3_000)
+                    for (ip in speakerHttpCandidates()) {
+                        val json = apiClient.getWifiSaved(ip, authToken()).getOrNull()
+                            ?: continue
+                        savedWifiNetworks = parseSavedNetworks(json)
+                        savedWifiCurrentSsid = json.optString("current_ssid", "")
+                        if (savedWifiCurrentSsid == ssid) {
+                            confirmed = true
+                            break
+                        }
+                    }
+                }
+                status = if (confirmed) {
+                    "Loa đã chuyển sang mạng '$ssid' (IP mới có thể khác — kiểm tra lại trạng thái loa nếu cần)."
+                } else {
+                    "Chưa xác nhận được loa đã chuyển sang '$ssid'. Xem mục wifi_provision trong trạng thái loa để biết mã lỗi thật."
+                }
+            } finally {
+                isSwitchingWifi = false
             }
         }
     }

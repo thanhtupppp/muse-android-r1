@@ -40,6 +40,15 @@ R1 dùng API 22, nên Agent sử dụng `WifiConfiguration` và `WifiManager`. K
 
 Mobile gửi các dòng `MUSE_WIFI_CONFIG`, `ssid=...`, `password=...`, `security=WPA2`, kết thúc bằng `END`. Agent trả một dòng `OK` hoặc `ERROR: ...`. Mobile chỉ báo thành công khi nhận chính xác `OK`; EOF hoặc phản hồi rỗng là lỗi.
 
+## Quét Wi-Fi từ loa và quản lý mạng đã lưu (HTTP :8080)
+
+- `GET /wifi-scan` — loa tự quét và trả danh sách Wi-Fi theo góc nhìn của loa (`ssid`, `rssi`, `security`, `has_2_4ghz`, `has_5ghz`, `saved`, `connected`). Mobile ưu tiên danh sách này khi chọn mạng cho loa; kết quả điện thoại quét chỉ là dự phòng. Logic quét dùng chung với đường BLE của app Muse (`SpeakerWifi`).
+- `GET /wifi-saved` — các mạng đã lưu trong cấu hình của loa + `current_ssid`/`current_ip`.
+- `POST /wifi-forget` `{ssid}` — quên một mạng đã lưu. Quên đúng mạng đang kết nối được lên lịch sau ~1,2 giây (response kịp về trước khi loa rớt mạng) và trả `was_connected: true, scheduled: true`.
+- `POST /wifi-use` `{ssid}` — chuyển loa sang một mạng đã lưu (không cần mật khẩu), cũng lên lịch ~1,2 giây; kết quả thật ghi vào `wifi_provision` của `/status` với `action: "wifi_use"` (mã lỗi có thể gặp: `NOT_SAVED`, `SWITCH_TIMEOUT`, `ENABLE_NETWORK_FAILED`). Mobile thăm dò `/wifi-saved` tới khi `current_ssid` khớp mới báo thành công. Chuyển thất bại thì loa cố quay về mạng trước đó.
+
+Cả bốn endpoint dùng cùng quy tắc xác thực `x-muse-token` như `/status`.
+
 ## Bảo mật và vận hành
 
 - Không ghi mật khẩu Wi-Fi hoặc Muse token vào log (SSID chỉ ghi ở mức debug cần thiết).

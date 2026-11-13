@@ -269,6 +269,84 @@ class R1ApiClient(private val context: Context? = null) {
         }
     }
 
+    /** GET JSON từ một endpoint :8080 của loa, kèm token khi có. */
+    private fun getJson(speakerIp: String, path: String, token: String?, label: String): JSONObject {
+        val cleanIp = speakerIp.trim()
+        require(isValidIpv4(cleanIp)) { "Địa chỉ IP không hợp lệ: $speakerIp" }
+
+        val reqBuilder = Request.Builder().url("http://$cleanIp:8080$path")
+        if (!token.isNullOrEmpty()) {
+            reqBuilder.addHeader("x-muse-token", token)
+        }
+
+        getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
+            val rawBody = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                val sample = rawBody.take(500)
+                throw IOException("$label thất bại: HTTP ${response.code} ${response.message}; body=$sample")
+            }
+            val json = JSONObject(rawBody)
+            if (!json.optBoolean("ok", false)) {
+                throw IOException("R1 báo lỗi: ${json.optString("error", rawBody)}")
+            }
+            return json
+        }
+    }
+
+    /** POST JSON {ssid} tới một endpoint :8080 của loa. */
+    private fun postSsid(speakerIp: String, path: String, ssid: String, token: String?, label: String): JSONObject {
+        val cleanIp = speakerIp.trim()
+        require(isValidIpv4(cleanIp)) { "Địa chỉ IP không hợp lệ: $speakerIp" }
+
+        val payload = JSONObject().put("ssid", ssid)
+        val reqBuilder = Request.Builder()
+            .url("http://$cleanIp:8080$path")
+            .post(payload.toString().toRequestBody("application/json".toMediaType()))
+        if (!token.isNullOrEmpty()) {
+            reqBuilder.addHeader("x-muse-token", token)
+        }
+
+        getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
+            val rawBody = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                val sample = rawBody.take(500)
+                throw IOException("$label thất bại: HTTP ${response.code} ${response.message}; body=$sample")
+            }
+            val json = JSONObject(rawBody)
+            if (!json.optBoolean("ok", false)) {
+                throw IOException("R1 báo lỗi: ${json.optString("error", rawBody)}")
+            }
+            return json
+        }
+    }
+
+    /**
+     * Danh sách Wi-Fi do chính loa quét được (GET /wifi-scan) — góc nhìn
+     * của loa, ưu tiên hơn kết quả điện thoại tự quét.
+     */
+    suspend fun getWifiScan(speakerIp: String, token: String? = null): Result<JSONObject> =
+        withContext(Dispatchers.IO) {
+            runCatching { getJson(speakerIp, "/wifi-scan", token, "Quét Wi-Fi từ loa") }
+        }
+
+    /** Các mạng Wi-Fi đã lưu trên loa + mạng đang dùng (GET /wifi-saved). */
+    suspend fun getWifiSaved(speakerIp: String, token: String? = null): Result<JSONObject> =
+        withContext(Dispatchers.IO) {
+            runCatching { getJson(speakerIp, "/wifi-saved", token, "Đọc mạng đã lưu trên loa") }
+        }
+
+    /** Quên một mạng đã lưu trên loa (POST /wifi-forget). */
+    suspend fun forgetWifi(speakerIp: String, ssid: String, token: String? = null): Result<JSONObject> =
+        withContext(Dispatchers.IO) {
+            runCatching { postSsid(speakerIp, "/wifi-forget", ssid, token, "Quên mạng Wi-Fi") }
+        }
+
+    /** Chuyển loa sang một mạng đã lưu (POST /wifi-use, loa lên lịch thực hiện). */
+    suspend fun useWifi(speakerIp: String, ssid: String, token: String? = null): Result<JSONObject> =
+        withContext(Dispatchers.IO) {
+            runCatching { postSsid(speakerIp, "/wifi-use", ssid, token, "Chuyển mạng Wi-Fi") }
+        }
+
     private fun postConfigureMuse(
         speakerIp: String,
         payload: JSONObject,
