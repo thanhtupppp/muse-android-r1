@@ -51,38 +51,53 @@ class WifiScanner(private val context: Context) {
             emptyList()
         }
 
-        scanResults
-            .mapNotNull { result ->
-                val rawSsid = result.SSID ?: return@mapNotNull null
-                val ssid = rawSsid.removeSurrounding("\"").trim()
+        val scanned = scanResults.mapNotNull { result ->
+            val rawSsid = result.SSID ?: return@mapNotNull null
+            val ssid = rawSsid.removeSurrounding("\"").trim()
 
-                if (ssid.isBlank() || ssid == "<unknown ssid>" || ssid.contains("\u0000")) {
-                    return@mapNotNull null
-                }
-
-                val security = parseSecurity(result.capabilities)
-
-                WifiNetwork(
-                    ssid = ssid,
-                    bssid = result.BSSID ?: "",
-                    frequencyMhz = result.frequency,
-                    signalLevel = result.level,
-                    security = security
-                )
+            if (ssid.isBlank() || ssid == "<unknown ssid>" || ssid.contains("\u0000")) {
+                return@mapNotNull null
             }
-            // Sắp xếp theo cường độ sóng giảm dần trước khi distinctBy để chọn AP mạnh nhất cho cùng một SSID (Mesh)
+
+            WifiNetwork(
+                ssid = ssid,
+                bssid = result.BSSID ?: "",
+                frequencyMhz = result.frequency,
+                signalLevel = result.level,
+                security = parseSecurity(result.capabilities)
+            )
+        }
+
+        // Gộp theo SSID: AP đại diện là AP sóng mạnh nhất, nhưng giữ lại
+        // thông tin "SSID có AP 2.4 GHz hay không" từ TOÀN BỘ các AP —
+        // distinctBy như trước ném mất thông tin này, khiến mạng hai băng
+        // bị gán nhãn theo AP 5 GHz mạnh hơn và mạng thuần 5 GHz trông
+        // không khác gì mạng loa dùng được.
+        return@withContext scanned
+            .groupBy { it.ssid }
+            .values
+            .map { group ->
+                val strongest = group.maxByOrNull { it.signalLevel } ?: group.first()
+                strongest.copy(has24Ghz = group.any { it.is24Ghz })
+            }
             .sortedByDescending { it.signalLevel }
-            .distinctBy { it.ssid }
     }
 
     private fun parseSecurity(capabilities: String?): String {
         if (capabilities.isNullOrEmpty()) return "OPEN"
         val caps = capabilities.uppercase()
-        // Nhận diện chuẩn WEP riêng biệt (chuẩn bảo mật cũ lỗi thời)
-        // Các chuẩn WPA/WPA2/WPA3 (Transition Mode) được map về WPA2 để tương thích với phần cứng loa R1
+        val hasSae = caps.contains("SAE")
+        val hasPsk = caps.contains("PSK")
         return when {
             caps.contains("WEP") -> "WEP"
-            caps.contains("WPA") || caps.contains("RSN") || caps.contains("SAE") -> "WPA2"
+            // WPA3 thuần (chỉ SAE, không PSK): supplicant Android 5.1 của
+            // loa không bắt tay được — phải hiện rõ thay vì lặng lẽ map về
+            // WPA2 như trước (khi đó provision chắc chắn CONNECT_TIMEOUT
+            // mà không ai hiểu vì sao). Chế độ hỗn hợp WPA2/WPA3 có cả
+            // PSK nên vẫn đi đường WPA2 bình thường.
+            hasSae && !hasPsk -> "WPA3"
+            caps.contains("EAP") && !hasPsk -> "EAP"
+            caps.contains("WPA") || caps.contains("RSN") || hasSae -> "WPA2"
             else -> "OPEN"
         }
     }

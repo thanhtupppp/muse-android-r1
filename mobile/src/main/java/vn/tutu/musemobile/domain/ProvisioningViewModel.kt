@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothDevice
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.util.Log
 import androidx.compose.runtime.getValue
@@ -487,6 +488,19 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
             return
         }
 
+        // Loa R1 (Android 5.1) không bắt tay được WPA3 thuần (SAE) hay
+        // WPA-Enterprise (EAP): chặn ngay tại app với lý do rõ ràng thay vì
+        // để loa thử 35 giây rồi app chờ mù 2 phút.
+        if (network.security.equals("WPA3", ignoreCase = true) ||
+            network.security.equals("EAP", ignoreCase = true)
+        ) {
+            state = ProvisioningState.Failure(
+                "Mạng ${network.ssid} dùng ${network.security.uppercase()} — loa R1 không hỗ trợ chuẩn này. Hãy đặt router sang WPA2-PSK hoặc chế độ hỗn hợp WPA2/WPA3 rồi thử lại.",
+                code = "UNSUPPORTED_SECURITY"
+            )
+            return
+        }
+
         val isOpen = network.isOpen
         val isHexPsk = password.length == 64 && password.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
         if (!isOpen && (password.length !in 8..63 && !isHexPsk)) {
@@ -585,6 +599,16 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    /** SSID mà điện thoại hiện đang nối (null nếu không đọc được). */
+    private fun currentPhoneSsid(): String? {
+        val wifiManager = getApplication<Application>().getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            ?: return null
+        @Suppress("DEPRECATION")
+        val raw = wifiManager.connectionInfo?.ssid ?: return null
+        val cleaned = raw.removeSurrounding("\"").trim()
+        return cleaned.takeIf { it.isNotEmpty() && it != "<unknown ssid>" }
+    }
+
     private suspend fun waitForR1OnHomeNetwork(
         bluetoothError: String? = null,
         knownIp: String? = null,
@@ -612,6 +636,21 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
 
         repeat(24) {
             delay(5000)
+            // Cho người dùng thấy ĐIỆN THOẠI đang ở mạng nào: nguyên nhân
+            // kẹt ở bước chờ này rất hay gặp là điện thoại chưa về đúng
+            // mạng nhà (còn ở hotspot loa đã tắt, hoặc tự nhảy sang SSID
+            // khác) — trước đây màn hình chờ không nói gì trong 2 phút.
+            if (targetSsid != null) {
+                val phoneSsid = currentPhoneSsid()
+                status = when {
+                    phoneSsid == null ->
+                        "Đang tìm loa trên $netName... (chưa đọc được Wi‑Fi điện thoại đang nối)"
+                    phoneSsid == targetSsid ->
+                        "Điện thoại đã ở mạng $targetSsid. Đang tìm loa..."
+                    else ->
+                        "⚠ Điện thoại đang ở mạng '$phoneSsid' — hãy chuyển Wi‑Fi điện thoại sang '$targetSsid' để tìm thấy loa."
+                }
+            }
             val discovered = discoveryClient.discover()
             if (discovered != null && !discovered.ipAddress.startsWith("192.168.43.")) {
                 state = ProvisioningState.Success(discovered.ipAddress)

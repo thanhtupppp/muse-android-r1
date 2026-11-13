@@ -224,6 +224,27 @@ fun WifiPickerScreen(
             )
         }
 
+        // Cảnh báo tương thích phần cứng loa NGAY tại màn hình chọn mạng:
+        // trước đây các mạng này trông y hệt mạng dùng được, người dùng chỉ
+        // biết thất bại sau 2 phút chờ mù ở bước xác nhận.
+        if (selectedNetwork != null) {
+            val unsupportedSecurity = selectedNetwork.security.equals("WPA3", ignoreCase = true) ||
+                selectedNetwork.security.equals("EAP", ignoreCase = true)
+            when {
+                unsupportedSecurity -> Text(
+                    text = "⚠ Mạng '${selectedNetwork.ssid}' dùng ${selectedNetwork.security.uppercase()} — loa R1 (Android 5.1) không hỗ trợ. Hãy đặt router sang WPA2-PSK hoặc hỗn hợp WPA2/WPA3.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error
+                )
+
+                !selectedNetwork.has24Ghz -> Text(
+                    text = "⚠ Kết quả quét chỉ thấy '${selectedNetwork.ssid}' ở băng 5/6 GHz — loa R1 chỉ hỗ trợ 2.4 GHz. Nếu router có phát cùng tên mạng ở 2.4 GHz, di chuyển lại gần router và quét lại; nếu không, hãy chọn SSID 2.4 GHz.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        }
+
         Spacer(modifier = Modifier.height(12.dp))
 
         InfoBanner(

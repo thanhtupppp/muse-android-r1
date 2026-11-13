@@ -5,7 +5,15 @@ data class WifiNetwork(
     val bssid: String,
     val frequencyMhz: Int,
     val signalLevel: Int,
-    val security: String = "WPA2"
+    val security: String = "WPA2",
+    /**
+     * SSID này có ít nhất một AP 2.4 GHz trong kết quả quét hay không.
+     * Khác [is24Ghz] (băng của AP đại diện mạnh nhất): router hai băng
+     * dùng chung SSID có thể có AP đại diện là 5 GHz trong khi vẫn tồn
+     * tại AP 2.4 GHz mà loa dùng được — và ngược lại, SSID chỉ có 5 GHz
+     * thì loa R1 không bao giờ nối được.
+     */
+    val has24Ghz: Boolean = frequencyMhz in 2400..2500
 ) {
     init {
         require(frequencyMhz > 0) { "Tần số Wi-Fi không hợp lệ: $frequencyMhz" }
