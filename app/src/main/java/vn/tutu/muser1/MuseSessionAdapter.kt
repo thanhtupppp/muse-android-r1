@@ -61,7 +61,8 @@ class MuseSessionAdapter(
         val noiseHost: String,
         val vmId: String,
         val wsUrl: String,
-        val bearerToken: String
+        val bearerToken: String,
+        val vmName: String = ""
     )
 
     private val httpClient = OkHttpClient.Builder()
@@ -98,6 +99,9 @@ class MuseSessionAdapter(
         private set
     @Volatile
     var activeVmId: String = ""
+        private set
+    @Volatile
+    var activeVmName: String = ""
         private set
     @Volatile
     var activeNoiseHost: String = MusePreferences.DEFAULT_NOISE_HOST
@@ -152,6 +156,7 @@ class MuseSessionAdapter(
                 }
 
                 activeVmId = target.vmId
+                activeVmName = target.vmName
                 activeNoiseHost = target.noiseHost
                 val outcome = runOneSession(target)
                 controlRegistered = false
@@ -275,6 +280,14 @@ class MuseSessionAdapter(
         if (selectedVm == null) {
             return Triple(null, "NO_LEASED_VM", false)
         }
+        // Ghi rõ VM được chọn: khi tài khoản có nhiều VM và không VM nào
+        // được đánh dấu mặc định, việc lặng lẽ lấy VM đầu tiên từng khiến
+        // chẩn đoán "loa vào sai VM" rất khó lần ra.
+        Log.i(
+            TAG,
+            "Chọn VM: name='${selectedVm.vmName}' id='${selectedVm.vmId}' " +
+                "default=${selectedVm.isDefault} (tổng ${vms.size} VM)"
+        )
 
         val fallbackHost = MusePreferences.getNoiseHost(context)
         val noiseHost = MuseApi.extractNoiseHost(selectedVm.vmUrl, fallbackHost)
@@ -292,7 +305,8 @@ class MuseSessionAdapter(
                 noiseHost = noiseHost,
                 vmId = vmId,
                 wsUrl = wsUrl,
-                bearerToken = selectedVm.vmAuthToken
+                bearerToken = selectedVm.vmAuthToken,
+                vmName = selectedVm.vmName
             ),
             "",
             false

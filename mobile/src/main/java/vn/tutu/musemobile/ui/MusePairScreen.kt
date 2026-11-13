@@ -211,6 +211,48 @@ fun MusePairScreen(viewModel: ProvisioningViewModel) {
                     )
                 }
             }
+
+            // Xoá cấu hình Muse: hai chạm để tránh xoá nhầm — chạm lần đầu
+            // chuyển nút sang trạng thái chờ xác nhận, chạm lần hai mới xoá.
+            AnimatedVisibility(
+                visible = viewModel.isMusePaired,
+                enter = fadeIn() + expandVertically()
+            ) {
+                var confirmClear by remember { mutableStateOf(false) }
+                Column {
+                    Spacer(modifier = Modifier.height(20.dp))
+                    androidx.compose.material3.OutlinedButton(
+                        onClick = {
+                            if (confirmClear) {
+                                confirmClear = false
+                                viewModel.setSpeakerIp(speakerIp.trim())
+                                viewModel.unconfigureMuse(speakerIp.trim())
+                            } else {
+                                confirmClear = true
+                            }
+                        },
+                        colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            if (confirmClear) {
+                                "Chạm lần nữa để XÁC NHẬN xoá cấu hình Muse"
+                            } else {
+                                "Xoá cấu hình Muse trên loa"
+                            }
+                        )
+                    }
+                    if (confirmClear) {
+                        Text(
+                            text = "Loa sẽ ngắt kết nối cloud và quên token/VM đã lưu. Cấu hình Wi-Fi và danh tính thiết bị được giữ nguyên.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
         }
     }
 }

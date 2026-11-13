@@ -377,6 +377,7 @@ class AgentService : Service() {
             lastMuseError = error
         }
         museSessionAdapter = adapter
+        currentSessionAdapter = adapter
         adapter.start()
     }
 
@@ -409,6 +410,11 @@ class AgentService : Service() {
         /** BLE server đang sống, để /status đọc trạng thái quảng bá/pair. */
         @Volatile
         var currentBleServer: MuseBleServer? = null
+            private set
+
+        /** Session adapter đang sống, để /status đọc active_vm_id/noise_host. */
+        @Volatile
+        var currentSessionAdapter: MuseSessionAdapter? = null
             private set
 
         /**

@@ -14,11 +14,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -105,6 +107,45 @@ fun HomeScreen(viewModel: ProvisioningViewModel) {
                     checking = false
                 }
             )
+            // VM thực tế loa đang kết nối (server cấp ở chế độ SDK token) —
+            // hiện kèm nút sao chép để mang sang cấu hình Direct VM khi cần.
+            AnimatedVisibility(
+                visible = viewModel.activeVmId.isNotEmpty(),
+                enter = fadeIn() + expandVertically()
+            ) {
+                val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "VM đang kết nối",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                        Text(
+                            text = buildString {
+                                append(viewModel.activeVmId)
+                                if (viewModel.activeVmName.isNotEmpty()) {
+                                    append(" • ")
+                                    append(viewModel.activeVmName)
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    IconButton(onClick = {
+                        clipboard.setText(androidx.compose.ui.text.AnnotatedString(viewModel.activeVmId))
+                    }) {
+                        Icon(
+                            imageVector = Icons.Filled.ContentCopy,
+                            contentDescription = "Sao chép VM ID"
+                        )
+                    }
+                }
+            }
             AnimatedVisibility(
                 visible = viewModel.commandResult.isNotEmpty(),
                 enter = fadeIn() + expandVertically()

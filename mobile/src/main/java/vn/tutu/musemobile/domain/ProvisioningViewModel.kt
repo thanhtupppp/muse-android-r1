@@ -127,6 +127,16 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     var isMuseConnected by mutableStateOf(false)
         private set
 
+    /** VM + host mà phiên Muse trên loa THỰC SỰ đang kết nối (từ /status). */
+    var activeVmId by mutableStateOf("")
+        private set
+
+    var activeVmName by mutableStateOf("")
+        private set
+
+    var activeNoiseHost by mutableStateOf("")
+        private set
+
     var speakerVolume by mutableStateOf(70)
         private set
 
@@ -266,6 +276,30 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    /** Xoá cấu hình Muse trên loa (đổi tài khoản/token hoặc gỡ ghép đôi). */
+    fun unconfigureMuse(ip: String? = null) {
+        val targetIp = (ip ?: speakerIp).trim()
+        viewModelScope.launch {
+            isPairingMuse = true
+            musePairStatus = "Đang xoá cấu hình Muse trên R1 ($targetIp:8080)..."
+            apiClient.unconfigureMuse(speakerIp = targetIp, token = authToken()).fold(
+                onSuccess = { res ->
+                    captureProvisionToken(res)
+                    isMusePaired = false
+                    isMuseConnected = false
+                    activeVmId = ""
+                    activeVmName = ""
+                    activeNoiseHost = ""
+                    musePairStatus = "✅ Đã xoá cấu hình Muse. Loa đã ngắt kết nối cloud, sẵn sàng cấu hình lại."
+                },
+                onFailure = { err ->
+                    musePairStatus = "❌ Xoá cấu hình thất bại: ${err.message}"
+                }
+            )
+            isPairingMuse = false
+        }
+    }
+
     fun checkMuseStatus(ip: String? = null) {
         val targetIp = (ip ?: speakerIp).trim()
         viewModelScope.launch {
@@ -282,14 +316,26 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                     val net = res.optString("network", "")
                     isMusePaired = paired
                     isMuseConnected = connected
+                    activeVmId = res.optString("active_vm_id", "")
+                    activeVmName = res.optString("active_vm_name", "")
+                    activeNoiseHost = res.optString("active_noise_host", "")
                     val sb = StringBuilder()
                     sb.append("Trạng thái R1:\n")
                     sb.append("• ID: $devId\n")
                     sb.append("• Chế độ Muse: $mode (${if (paired) "Đã cấu hình ✅" else "Chưa cấu hình ❌"})\n")
                     sb.append("• Kết nối Noise XX: ${if (connected) "ĐÃ KẾT NỐI CLOUD ✅" else "Chưa kết nối ⏳"}\n")
-                    sb.append("• Server: $host")
-                    if (vmId.isNotEmpty()) sb.append(" | VM: $vmId")
-                    sb.append("\n")
+                    if (activeVmId.isNotEmpty()) {
+                        // VM thực tế đang kết nối (ở chế độ SDK token đây là
+                        // giá trị server cấp — nơi duy nhất người dùng đọc
+                        // được để mang sang chế độ Direct VM).
+                        sb.append("• VM đang dùng: $activeVmId")
+                        if (activeVmName.isNotEmpty()) sb.append(" ($activeVmName)")
+                        sb.append(" @ ${activeNoiseHost.ifEmpty { host }}\n")
+                    } else {
+                        sb.append("• Server: $host")
+                        if (vmId.isNotEmpty()) sb.append(" | VM: $vmId")
+                        sb.append("\n")
+                    }
                     if (museErr.isNotEmpty()) sb.append("• Chi tiết: $museErr\n")
                     sb.append("• Mạng: $net")
                     commandResult = sb.toString()

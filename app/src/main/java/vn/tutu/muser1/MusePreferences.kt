@@ -294,8 +294,12 @@ object MusePreferences {
     fun getMusePairingMode(context: Context): String {
         return when {
             hasDirectConfig(context) -> "direct"
-            getMuseAccessToken(context).isNotEmpty() || getMuseRefreshToken(context).isNotEmpty() -> "oauth"
+            // SDK token là cách NGƯỜI DÙNG đã cấu hình; access/refresh token
+            // chỉ là hệ quả phái sinh của lần refresh đầu tiên. Báo "oauth"
+            // khi còn mgst_ sẽ làm /status đổi tên chế độ một cách khó hiểu
+            // ngay sau khi kết nối thành công lần đầu.
             getMuseToken(context).startsWith("mgst_") -> "sdk_token"
+            getMuseAccessToken(context).isNotEmpty() || getMuseRefreshToken(context).isNotEmpty() -> "oauth"
             else -> "none"
         }
     }

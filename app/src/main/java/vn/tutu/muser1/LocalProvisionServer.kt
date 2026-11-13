@@ -72,6 +72,7 @@ class LocalProvisionServer(
             Method.POST -> when (uri) {
                 "/provision-wifi" -> provisionWifi(session)
                 "/configure-muse", "/pair" -> configureMuse(session)
+                "/unconfigure-muse" -> unconfigureMuse(session)
                 "/command" -> handleCommand(session)
                 else -> notFound()
             }
@@ -190,6 +191,31 @@ class LocalProvisionServer(
             Log.e(TAG, "Invalid provisioning request", error)
             badRequest("INVALID_REQUEST")
         }
+    }
+
+    /**
+     * Xoá toàn bộ cấu hình Muse (cả SDK token lẫn Direct VM) để đổi tài
+     * khoản/token hoặc gỡ ghép đôi từ phía Mobile. Dùng lại
+     * [MusePreferences.clearMusePairing] — cùng hàm với đường
+     * `link.unpaired` từ server: identity của gadget và provision token
+     * :8080 được GIỮ nguyên (provision token vẫn hợp lệ nên Mobile gọi
+     * tiếp được ngay mà không cần vào lại cửa sổ cấu hình).
+     */
+    private fun unconfigureMuse(session: IHTTPSession): Response {
+        if (!isAuthorized(session)) {
+            return unauthorized()
+        }
+        MusePreferences.clearMusePairing(context)
+        AgentService.reloadMuseSession(context)
+        Log.i(TAG, "Đã xoá cấu hình Muse theo yêu cầu từ Mobile")
+        return json(
+            response = JSONObject()
+                .put("ok", true)
+                .put("mode", "none")
+                .put("muse_paired", false)
+                .put("provision_token", MusePreferences.ensureProvisionToken(context))
+                .put("message", "Muse configuration cleared")
+        )
     }
 
     private fun configureMuse(session: IHTTPSession): Response {
@@ -366,6 +392,12 @@ class LocalProvisionServer(
             .put("muse_error", AgentService.lastMuseError)
             .put("noise_host", MusePreferences.getNoiseHost(context))
             .put("vm_id", MusePreferences.getDirectVmId(context))
+            // VM + host mà phiên hiện tại THỰC SỰ đang kết nối (ở chế độ
+            // SDK token, vm_id do server cấp qua fetch_vms — đây là nơi
+            // duy nhất đọc được giá trị đó để mang sang chế độ Direct).
+            .put("active_vm_id", AgentService.currentSessionAdapter?.activeVmId ?: "")
+            .put("active_vm_name", AgentService.currentSessionAdapter?.activeVmName ?: "")
+            .put("active_noise_host", AgentService.currentSessionAdapter?.activeNoiseHost ?: "")
             .put("has_muse_token", MusePreferences.getMuseToken(context).isNotEmpty())
             .put("has_direct_token", MusePreferences.hasDirectConfig(context))
             .put("bluetooth", btInfo)
