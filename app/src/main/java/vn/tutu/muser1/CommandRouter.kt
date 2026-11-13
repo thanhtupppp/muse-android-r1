@@ -26,7 +26,10 @@ class CommandRouter(private val context: Context) {
             when (action) {
                 "set_volume" -> setVolume(payload.optInt("value", -1))
                 "tts" -> handleTts(payload.optString("text"))
-                "stop" -> Log.i(TAG, "Stop command received")
+                "stop" -> {
+                    val result = SpeechOutput.stopAll()
+                    Log.i(TAG, "Stop command received: $result")
+                }
                 "wifi_status" -> Log.i(TAG, NetworkStateObserver.currentSummary(context))
                 "muse_status" -> Log.i(TAG, museCommandSurface.execute("{\"name\":\"muse_r1.get_status\"}"))
                 else -> Log.w(TAG, "Unknown command: $action")
@@ -56,7 +59,8 @@ class CommandRouter(private val context: Context) {
             return
         }
 
-        Log.i(TAG, "TTS requested: $text")
+        val result = SpeechOutput.speak(context, text)
+        Log.i(TAG, "TTS requested (${text.trim().length} chars): $result")
     }
 
     companion object {

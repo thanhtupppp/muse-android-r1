@@ -2,7 +2,6 @@ package vn.tutu.muser1
 
 import android.content.Context
 import android.media.AudioManager
-import android.media.MediaPlayer
 import android.util.Log
 import org.json.JSONObject
 
@@ -156,26 +155,31 @@ class MuseCommandSurface(private val context: Context) {
             return invokeError("TTS text is required")
         }
 
-        Log.i(TAG, "Muse TTS requested: $text")
+        Log.i(TAG, "Muse TTS requested (${text.length} chars)")
 
-        try {
-            val player = MediaPlayer.create(context, R.raw.agent_ready)
-            player?.setOnCompletionListener { it.release() }
-            player?.start()
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to play test sound", e)
+        // TextToSpeech thật qua SpeechOutput. Trước đây lệnh này chỉ phát
+        // tiếng chuông ready đóng hộp rồi báo accepted — stub.
+        return when (val result = SpeechOutput.speak(context, text)) {
+            SpeechOutput.SpeakResult.UNAVAILABLE ->
+                invokeError("Text-to-speech engine is not available on this device")
+            else -> invokeSuccess(
+                JSONObject()
+                    .put("accepted", true)
+                    .put("engine_ready", result == SpeechOutput.SpeakResult.QUEUED)
+                    .put("text", text)
+            )
         }
-
-        return invokeSuccess(
-            JSONObject()
-                .put("accepted", true)
-                .put("text", text)
-        )
     }
 
     private fun invokeStopAudio(): JSONObject {
         Log.i(TAG, "Stop audio requested")
-        return invokeSuccess(JSONObject().put("stopped", true))
+        val result = SpeechOutput.stopAll()
+        return invokeSuccess(
+            JSONObject()
+                .put("stopped", true)
+                .put("tts_stopped", result.ttsStopped)
+                .put("players_stopped", result.playersStopped)
+        )
     }
 
     private fun invokeSuccess(payload: JSONObject): JSONObject {

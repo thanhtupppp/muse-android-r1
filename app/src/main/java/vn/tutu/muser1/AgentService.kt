@@ -67,6 +67,8 @@ class AgentService : Service() {
         }
 
         readyPlayer = player
+        // Đăng ký để lệnh stop_audio dừng được cả tiếng chuông này.
+        SpeechOutput.trackPlayer(player)
         player.setOnCompletionListener {
             Log.i(TAG, "Ready announcement playback completed")
             it.release()
@@ -172,6 +174,7 @@ class AgentService : Service() {
 
         readyPlayer?.release()
         readyPlayer = null
+        SpeechOutput.shutdown()
         telemetryReporter = null
 
         mqttAgent?.disconnect()
