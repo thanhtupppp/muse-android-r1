@@ -10,6 +10,13 @@ import org.json.JSONObject
  */
 object MuseLinkProtocol {
 
+    /** Theo DEVICE.md: luôn là "gadget" với thiết bị dựng bằng SDK. */
+    const val DEVICE_FAMILY = "gadget"
+
+    /** Danh tính phần cứng ổn định của loa (định dạng [a-z0-9-]{1,64}). */
+    const val MODEL_ID = "phicomm-r1"
+    const val MODEL_NAME = "Phicomm R1"
+
     const val TYPE_REQ = "req"
     const val METHOD_REGISTER = "link.register"
     const val METHOD_INVOKE = "link.invoke"
@@ -23,19 +30,26 @@ object MuseLinkProtocol {
         commandsV2: JSONObject,
         networkSsid: String = ""
     ): String {
+        // Tự mô tả thiết bị theo hợp đồng protocols/DEVICE.md của Muse
+        // Gadget SDK: mọi gadget đăng ký device_family "gadget" (giá trị
+        // "speaker" trước đây là định dạng cũ), model_id ổn định theo phần
+        // cứng và metadata.model_name là tên người dùng biết tới.
+        val metadata = JSONObject()
+            .put("model_name", MODEL_NAME)
+        if (networkSsid.isNotBlank()) {
+            metadata.put("network_ssid", networkSsid)
+        }
+
         val params = JSONObject()
             .put("node_id", nodeId.lowercase())
             .put("display_name", displayName)
             .put("platform", "android")
             .put("version", agentVersion)
-            .put("device_family", "speaker")
-            .put("model_id", "phicomm-r1")
+            .put("device_family", DEVICE_FAMILY)
+            .put("model_id", MODEL_ID)
+            .put("metadata", metadata)
             .put("is_wakeup_supported", false)
             .put("commands_v2", commandsV2)
-
-        if (networkSsid.isNotBlank()) {
-            params.put("metadata", JSONObject().put("network_ssid", networkSsid))
-        }
 
         return JSONObject()
             .put("type", TYPE_REQ)

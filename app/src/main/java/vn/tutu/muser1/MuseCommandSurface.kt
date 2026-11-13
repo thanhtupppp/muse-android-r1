@@ -33,6 +33,7 @@ class MuseCommandSurface(private val context: Context) {
         return try {
             when (command) {
                 "device.health" -> invokeHealth()
+                "device.guide" -> invokeGuide()
                 "muse_r1.set_volume", "voice.configure" -> invokeSetVolume(params)
                 "muse_r1.get_status" -> invokeGetStatus()
                 "muse_r1.tts" -> invokeTts(params)
@@ -51,6 +52,12 @@ class MuseCommandSurface(private val context: Context) {
             "device.health",
             buildCommandSpec(
                 description = "Report Phicomm R1 speaker health, power status, network summary, and Muse pairing state."
+            )
+        )
+        commands.put(
+            "device.guide",
+            buildCommandSpec(
+                description = "Return the Markdown guide describing this device, its controls and its limits, so Muse knows how to use it. Takes no parameters; the result payload is {format: \"markdown\", guide: \"...\"}."
             )
         )
         commands.put(
@@ -115,6 +122,16 @@ class MuseCommandSurface(private val context: Context) {
                 .put("muse_paired", MusePreferences.isMusePaired(context))
                 .put("muse_mode", MusePreferences.getMusePairingMode(context))
                 .put("network", NetworkStateObserver.currentSummary(context))
+        )
+    }
+
+    private fun invokeGuide(): JSONObject {
+        // Theo hợp đồng protocols/DEVICE.md của Muse Gadget SDK: payload
+        // là {format, guide}; guide là Markdown nhúng sẵn, tối đa 4096 byte.
+        return invokeSuccess(
+            JSONObject()
+                .put("format", "markdown")
+                .put("guide", DEVICE_GUIDE_MD)
         )
     }
 
@@ -203,5 +220,30 @@ class MuseCommandSurface(private val context: Context) {
 
     companion object {
         private const val TAG = "MuseR1"
+
+        /**
+         * Nội dung device.guide: mô tả thiết bị cho Muse theo đúng quy tắc
+         * của SDK (một tiêu đề #, không link/code block/HTML, không bước
+         * cài đặt/ghép đôi, không bí mật; giữ dưới 2048 byte như guide mẫu).
+         */
+        private const val DEVICE_GUIDE_MD = """# Phicomm R1 Muse speaker
+
+This device is a Phicomm R1 smart speaker running an Android agent that turns it into a Muse gadget. It has no screen and no camera. It plays sound, speaks text aloud, and reports its health and network status. Muse uses it only through the commands it lists; each command's description says what it does and what it returns.
+
+## What it can do
+
+- Speak a short text aloud with muse_r1.tts, preferring Vietnamese and falling back to the system default voice. If the device has no speech engine, the command returns an error instead of pretending to speak.
+- Set the music volume from 0 to 100 with muse_r1.set_volume.
+- Stop speech and any audio it is playing with muse_r1.stop_audio.
+- Report health, pairing state and network summary with device.health and muse_r1.get_status.
+
+## Controls
+
+The round button on top is the speaker's only physical control. Its job is to confirm Bluetooth pairing when the Muse app asks for a physical press; Muse cannot read it or use it for anything else. Volume is changed by command, not by buttons.
+
+## Limits and recovery
+
+- This build exposes no microphone command to Muse, so never speak to the speaker expecting it to hear or answer by voice.
+- If commands fail, device.health shows whether the speaker is paired and which network it is on. The owner recovers the speaker with the Muse Mobile app or by restarting it; beyond power there is nothing to press or unplug."""
     }
 }
