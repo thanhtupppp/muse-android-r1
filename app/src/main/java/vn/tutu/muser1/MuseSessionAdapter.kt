@@ -184,7 +184,9 @@ class MuseSessionAdapter(
             val effectiveRefresh = refreshToken.ifEmpty { sdkToken.orEmpty() }
             val (tokens, refreshStatus) = MuseApi.refreshDeviceToken(
                 refreshToken = effectiveRefresh,
-                deviceId = deviceId,
+                // device_id của Muse Gadget phải là "hatch-link:<mac>",
+                // không phải device id nội bộ (MQTT) của Agent.
+                deviceId = MusePreferences.getMuseIdentity(context).deviceId,
                 sdkToken = sdkToken,
                 apiBaseUrl = apiBase
             )
@@ -326,10 +328,13 @@ class MuseSessionAdapter(
                 if (!sendBinaryFramesLocked(ws, openFrames)) {
                     return closeAndFail(ws, "CONTROL_OPEN_SEND_FAILED", SessionOutcome.CLOSED)
                 }
+                // node_id của Muse Gadget phải là "homelink-<6 hex cuối>",
+                // trùng hậu tố với tên BLE "MuseGadget-<6 HEX>".
+                val museNodeId = MusePreferences.getMuseIdentity(context).nodeId
                 val regJson = MuseLinkProtocol.buildRegisterMessage(
                     requestId = registerId,
-                    nodeId = deviceId,
-                    displayName = "Phicomm R1 ($deviceId)",
+                    nodeId = museNodeId,
+                    displayName = "Phicomm R1 ($museNodeId)",
                     agentVersion = BuildConfig.VERSION_NAME,
                     commandsV2 = commandSurface.commandsV2Json(),
                     networkSsid = currentWifiSsid()
@@ -343,7 +348,7 @@ class MuseSessionAdapter(
                     return closeAndFail(ws, "REGISTER_SEND_FAILED", SessionOutcome.CLOSED)
                 }
             }
-            Log.i(TAG, "Đã gửi link.register (node=${deviceId.lowercase()}, stream=$controlStreamId)")
+            Log.i(TAG, "Đã gửi link.register (node=${MusePreferences.getMuseIdentity(context).nodeId}, stream=$controlStreamId)")
 
             // Bước 3: Nhận ServiceFrame và xử lý link.invoke / link.unpaired
             val jsonDecoder = LengthPrefixedJsonDecoder()

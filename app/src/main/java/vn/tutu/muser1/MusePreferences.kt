@@ -14,6 +14,7 @@ object MusePreferences {
     private const val KEY_API_URL = "muse_api_url"
     private const val KEY_API_URL_V2 = "muse_api_url_v2"
     private const val KEY_USERNAME = "muse_username"
+    private const val KEY_MUSE_IDENTITY_MAC = "muse_identity_mac"
     private const val KEY_DIRECT_VM_ID = "muse_direct_vm_id"
     private const val KEY_DIRECT_TOKEN = "muse_direct_token"
 
@@ -111,6 +112,24 @@ object MusePreferences {
             android.provider.Settings.Secure.ANDROID_ID
         )
         return if (!androidId.isNullOrEmpty()) "r1-$androidId" else "r1-device"
+    }
+
+    /**
+     * Muse Gadget identity (xem [MuseIdentity]). Sinh một lần, lưu bền trong
+     * private preferences và dùng lại mãi, kể cả sau khi unpair — giống hệt
+     * cách bản Linux SDK giữ identity qua các lần nâng cấp và huỷ ghép đôi.
+     * Không suy ra từ ANDROID_ID hay địa chỉ phần cứng.
+     */
+    @Synchronized
+    fun getMuseIdentity(context: Context): MuseIdentity {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val saved = prefs.getString(KEY_MUSE_IDENTITY_MAC, null)
+        if (MuseIdentity.isValidMac(saved)) {
+            return MuseIdentity.fromMac(saved!!)
+        }
+        val created = MuseIdentity.generate()
+        prefs.edit().putString(KEY_MUSE_IDENTITY_MAC, created.mac).apply()
+        return created
     }
 
     fun getMuseToken(context: Context): String {

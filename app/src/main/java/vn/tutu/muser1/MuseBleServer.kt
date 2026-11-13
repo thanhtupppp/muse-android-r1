@@ -32,7 +32,8 @@ import java.util.concurrent.TimeUnit
  * - Service UUID: 7fdd3d1c-38ea-46cf-8b46-314ecf5f240c
  * - RX Characteristic: 4d593029-28a2-4a6e-a1f0-3c2d5e8f9b01 (Write)
  * - TX Characteristic: d75dc4ca-7b2b-4e9c-8f0a-1d2e3f4a5b6c (Notify)
- * - Tên BLE: MuseGadget-XXXX (để app Meta Muse nhận diện)
+ * - Tên BLE: MuseGadget-XXXXXX (để app Meta Muse nhận diện; hậu tố phải
+ *   trùng hậu tố nodeId "homelink-XXXXXX", xem [MuseIdentity])
  * - Manufacturer Data: 0xFFFF (cờ paired)
  */
 class MuseBleServer(
@@ -48,6 +49,24 @@ class MuseBleServer(
     private var advertiser: BluetoothLeAdvertiser? = null
     @Volatile
     private var isAdvertising = false
+    @Volatile
+    private var isStarting = false
+
+    /** Tăng mỗi lần stop() để một start() đang chờ ở thread nền tự huỷ. */
+    @Volatile
+    private var startGeneration = 0
+
+    @Volatile
+    private var serviceAddedLatch: CountDownLatch? = null
+
+    @Volatile
+    private var serviceAddStatus: Int = BluetoothGatt.GATT_SUCCESS
+
+    /** Lỗi khởi động gần nhất (ví dụ BLUETOOTH_NOT_ENABLED), để chẩn đoán. */
+    @Volatile
+    var lastStartError: String? = null
+        private set
+
     @Volatile
     private var connectedDevice: BluetoothDevice? = null
     @Volatile
@@ -70,11 +89,20 @@ class MuseBleServer(
 
         override fun onStartFailure(errorCode: Int) {
             isAdvertising = false
+            lastStartError = "ADVERTISE_FAILED_$errorCode"
             Log.e(TAG, "Muse BLE Advertising thất bại với mã lỗi: $errorCode")
         }
     }
 
     private val gattServerCallback = object : BluetoothGattServerCallback() {
+        override fun onServiceAdded(status: Int, service: BluetoothGattService) {
+            if (service.uuid.toString().equals(SERVICE_UUID, ignoreCase = true)) {
+                serviceAddStatus = status
+                serviceAddedLatch?.countDown()
+                Log.i(TAG, "GATT onServiceAdded status=$status cho Service $SERVICE_UUID")
+            }
+        }
+
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             val stateName = when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> "CONNECTED"
@@ -194,31 +222,112 @@ class MuseBleServer(
         }
     }
 
+    /**
+     * Khởi động BLE peripheral. Hàm này chỉ lên lịch và trả về ngay: việc chờ
+     * Bluetooth bật và chờ GATT service được đăng ký xong chạy ở thread nền,
+     * vì start() được gọi từ AgentService.onStartCommand (main thread).
+     */
     @SuppressLint("MissingPermission")
     fun start() {
-        if (isAdvertising) {
-            Log.d(TAG, "BLE Advertising đã đang chạy, bỏ qua yêu cầu trùng")
+        if (isAdvertising || isStarting) {
+            Log.d(TAG, "BLE Advertising đã đang chạy/đang khởi động, bỏ qua yêu cầu trùng")
             return
         }
+        isStarting = true
+        val generation = startGeneration
+        Thread({
+            try {
+                startInternal(generation)
+            } catch (e: Exception) {
+                lastStartError = "START_EXCEPTION:${e.javaClass.simpleName}"
+                Log.e(TAG, "Lỗi khởi động Muse BLE Server", e)
+            } finally {
+                if (generation == startGeneration) {
+                    isStarting = false
+                }
+            }
+        }, "MuseBleServerStart").start()
+    }
 
+    @SuppressLint("MissingPermission")
+    private fun startInternal(generation: Int) {
         val adapter = bluetoothAdapter
         if (adapter == null) {
+            lastStartError = "NO_BLUETOOTH_ADAPTER"
             Log.e(TAG, "Không tìm thấy BluetoothAdapter")
             return
         }
 
+        // 0a. Chờ Bluetooth bật hẳn rồi mới lấy advertiser / mở GATT.
+        // Trước đây code gọi adapter.enable() rồi đi tiếp ngay, nên khi loa
+        // vừa boot mà Bluetooth chưa kịp bật, bluetoothLeAdvertiser trả về
+        // null (theo tài liệu Android) và advertising chết lặng. Server SPP
+        // đã chờ tối đa 15 giây; ở đây làm tương tự nhưng ở thread nền.
         if (!adapter.isEnabled) {
-            Log.i(TAG, "Bluetooth đang tắt, gửi yêu cầu bật...")
+            Log.i(TAG, "Bluetooth đang tắt, gửi yêu cầu bật và chờ...")
+            @Suppress("DEPRECATION")
             adapter.enable()
+            val deadline = System.currentTimeMillis() + BLUETOOTH_ENABLE_TIMEOUT_MS
+            while (!adapter.isEnabled && System.currentTimeMillis() < deadline) {
+                if (generation != startGeneration) return
+                try {
+                    Thread.sleep(BLUETOOTH_POLL_INTERVAL_MS)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return
+                }
+            }
+        }
+        if (generation != startGeneration) return
+        if (!adapter.isEnabled) {
+            lastStartError = "BLUETOOTH_NOT_ENABLED"
+            Log.e(TAG, "Bluetooth vẫn chưa bật sau ${BLUETOOTH_ENABLE_TIMEOUT_MS}ms, huỷ khởi động BLE")
+            return
         }
 
-        val rawMac = adapter.address?.takeIf { it.isNotBlank() && it != "02:00:00:00:00:00" } ?: "FC:7C:02:57:41:8E"
-        val deviceId = MusePreferences.getDeviceId(context)
+        // 0b. Kiểm tra khả năng peripheral TRƯỚC khi mở GATT server, để lỗi
+        // thì không để lại GATT server mồ côi như trước. Lưu ý:
+        // isMultipleAdvertisementSupported=false chưa chắc chắn thiết bị
+        // không phát được một advertisement duy nhất, nên chỉ cảnh báo;
+        // bằng chứng quyết định là advertiser null hoặc
+        // AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED.
+        val multiAdvSupported = try {
+            adapter.isMultipleAdvertisementSupported
+        } catch (e: Exception) {
+            Log.w(TAG, "Không đọc được isMultipleAdvertisementSupported", e)
+            false
+        }
+        if (!multiAdvSupported) {
+            Log.w(
+                TAG,
+                "isMultipleAdvertisementSupported=false: chipset/stack có thể không hỗ trợ " +
+                    "BLE peripheral advertising; vẫn thử lấy advertiser"
+            )
+        }
+        val leAdvertiser = try {
+            adapter.bluetoothLeAdvertiser
+        } catch (e: Exception) {
+            Log.e(TAG, "Lỗi lấy BluetoothLeAdvertiser", e)
+            null
+        }
+        if (leAdvertiser == null) {
+            lastStartError = "BLE_ADVERTISER_UNAVAILABLE"
+            Log.e(TAG, "Thiết bị không hỗ trợ BluetoothLeAdvertiser (peripheral mode)")
+            return
+        }
+        advertiser = leAdvertiser
+        lastStartError = null
+
+        // 1. Danh tính Muse Gadget: nodeId / deviceId / tên BLE đều suy ra
+        // từ MỘT identity lưu bền (xem MuseIdentity) — không còn lấy từ
+        // ANDROID_ID, địa chỉ Bluetooth phần cứng hay MAC hardcode, nên hậu
+        // tố tên BLE luôn trùng hậu tố nodeId như app Muse mong đợi.
+        val identity = MusePreferences.getMuseIdentity(context)
         val existingSdkToken = MusePreferences.getMuseToken(context).takeIf { it.startsWith("mgst_") }
         pairingProtocol = MuseBlePairingProtocol(
-            deviceId = deviceId,
-            nodeId = deviceId,
-            macAddress = rawMac,
+            deviceId = identity.deviceId,
+            nodeId = identity.nodeId,
+            macAddress = identity.mac,
             firmwareVersion = BuildConfig.VERSION_NAME,
             sdkToken = existingSdkToken,
             onWifiScan = { scanWifiNetworks() },
@@ -226,69 +335,88 @@ class MuseBleServer(
         )
         rxAssembler.reset()
 
-        // 1. Đặt tên Bluetooth theo chuẩn Muse Gadget để app Meta Muse nhận diện
-        // Theo chuẩn Meta: "MuseGadget-" + 6 ký tự hex cuối của MAC (viết hoa)
-        val mac = rawMac.replace(":", "")
-        val suffix = if (mac.length >= 6) mac.takeLast(6).uppercase() else "57418E"
-        val bleName = "MuseGadget-$suffix"
         try {
-            if (adapter.name != bleName) {
-                adapter.name = bleName
-                Log.i(TAG, "Đã cập nhật tên Bluetooth thiết bị thành: $bleName")
+            if (adapter.name != identity.bleName) {
+                adapter.name = identity.bleName
+                Log.i(TAG, "Đã cập nhật tên Bluetooth thiết bị thành: ${identity.bleName}")
             }
         } catch (e: Exception) {
             Log.w(TAG, "Không thể đổi tên Bluetooth adapter", e)
         }
 
-        // 2. Mở GATT Server và đăng ký Service Meta Muse
-        try {
-            gattServer = bluetoothManager?.openGattServer(context, gattServerCallback)
-            if (gattServer != null) {
-                val service = BluetoothGattService(
-                    UUID.fromString(SERVICE_UUID),
-                    BluetoothGattService.SERVICE_TYPE_PRIMARY
-                )
-
-                val rxChar = BluetoothGattCharacteristic(
-                    UUID.fromString(RX_UUID),
-                    BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
-                    BluetoothGattCharacteristic.PERMISSION_WRITE
-                )
-
-                val txChar = BluetoothGattCharacteristic(
-                    UUID.fromString(TX_UUID),
-                    BluetoothGattCharacteristic.PROPERTY_NOTIFY,
-                    BluetoothGattCharacteristic.PERMISSION_READ
-                )
-
-                val cccd = BluetoothGattDescriptor(
-                    UUID.fromString(CCCD_UUID),
-                    BluetoothGattDescriptor.PERMISSION_WRITE or BluetoothGattDescriptor.PERMISSION_READ
-                )
-                txChar.addDescriptor(cccd)
-
-                service.addCharacteristic(rxChar)
-                service.addCharacteristic(txChar)
-                txCharacteristic = txChar
-
-                gattServer?.addService(service)
-                Log.i(TAG, "Đã tạo Meta Muse GATT Server với Service $SERVICE_UUID")
-            } else {
-                Log.e(TAG, "Không thể mở BluetoothGattServer")
-            }
+        // 2. Mở GATT Server, đăng ký Service Meta Muse và CHỜ onServiceAdded
+        // rồi mới advertise. addService() là bất đồng bộ: advertise ngay như
+        // trước khiến central có thể kết nối khi service chưa có trong
+        // GATT database và discover ra tập rỗng.
+        closeGattServer()
+        val server = try {
+            bluetoothManager?.openGattServer(context, gattServerCallback)
         } catch (e: Exception) {
-            Log.e(TAG, "Lỗi khởi tạo GATT Server", e)
+            Log.e(TAG, "Lỗi mở BluetoothGattServer", e)
+            null
         }
+        if (server == null) {
+            lastStartError = "GATT_SERVER_UNAVAILABLE"
+            Log.e(TAG, "Không thể mở BluetoothGattServer")
+            return
+        }
+        gattServer = server
+
+        val service = BluetoothGattService(
+            UUID.fromString(SERVICE_UUID),
+            BluetoothGattService.SERVICE_TYPE_PRIMARY
+        )
+
+        val rxChar = BluetoothGattCharacteristic(
+            UUID.fromString(RX_UUID),
+            BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
+            BluetoothGattCharacteristic.PERMISSION_WRITE
+        )
+
+        val txChar = BluetoothGattCharacteristic(
+            UUID.fromString(TX_UUID),
+            BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+            BluetoothGattCharacteristic.PERMISSION_READ
+        )
+
+        val cccd = BluetoothGattDescriptor(
+            UUID.fromString(CCCD_UUID),
+            BluetoothGattDescriptor.PERMISSION_WRITE or BluetoothGattDescriptor.PERMISSION_READ
+        )
+        txChar.addDescriptor(cccd)
+
+        service.addCharacteristic(rxChar)
+        service.addCharacteristic(txChar)
+        txCharacteristic = txChar
+
+        val latch = CountDownLatch(1)
+        serviceAddedLatch = latch
+        serviceAddStatus = BluetoothGatt.GATT_FAILURE
+        try {
+            server.addService(service)
+        } catch (e: Exception) {
+            lastStartError = "GATT_ADD_SERVICE_EXCEPTION"
+            Log.e(TAG, "Lỗi addService cho GATT Server", e)
+            closeGattServer()
+            return
+        }
+        val serviceAdded = try {
+            latch.await(SERVICE_ADD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+        if (generation != startGeneration) return
+        if (!serviceAdded || serviceAddStatus != BluetoothGatt.GATT_SUCCESS) {
+            lastStartError = "GATT_SERVICE_ADD_FAILED:$serviceAddStatus"
+            Log.e(TAG, "GATT service chưa sẵn sàng (added=$serviceAdded, status=$serviceAddStatus), huỷ khởi động BLE")
+            closeGattServer()
+            return
+        }
+        Log.i(TAG, "Đã tạo Meta Muse GATT Server với Service $SERVICE_UUID")
 
         // 3. Khởi động BLE Advertising
         try {
-            val leAdvertiser = adapter.bluetoothLeAdvertiser
-            advertiser = leAdvertiser
-            if (leAdvertiser == null) {
-                Log.e(TAG, "Thiết bị không hỗ trợ BluetoothLeAdvertiser")
-                return
-            }
-
             try {
                 leAdvertiser.stopAdvertising(advertiseCallback)
             } catch (_: Exception) {}
@@ -301,7 +429,7 @@ class MuseBleServer(
                 .build()
 
             val serviceParcelUuid = ParcelUuid(UUID.fromString(SERVICE_UUID))
-            
+
             // Meta Muse Gadget advertisement flags (ID: 0xFFFF):
             // Chỉ đặt Bit 0 (0x01 = FLAG_PAIRING_MODE):
             // Nếu đặt Bit 1 (0x02 = LINK_FLAG_BLUETOOTH_GADGET), HatchDeviceBleManager.onScanResult
@@ -322,12 +450,32 @@ class MuseBleServer(
             leAdvertiser.startAdvertising(settings, advertiseData, scanResponse, advertiseCallback)
             Log.i(TAG, "Bắt đầu phát sóng Meta Muse BLE Advertising...")
         } catch (e: Exception) {
+            lastStartError = "ADVERTISE_EXCEPTION:${e.javaClass.simpleName}"
             Log.e(TAG, "Lỗi khởi động BLE Advertising", e)
+            closeGattServer()
         }
+    }
+
+    /** Đóng GATT server hiện tại (nếu có) và xoá characteristic đang giữ. */
+    private fun closeGattServer() {
+        try {
+            gattServer?.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "Lỗi đóng GATT Server", e)
+        }
+        gattServer = null
+        txCharacteristic = null
+        serviceAddedLatch?.countDown()
+        serviceAddedLatch = null
     }
 
     @SuppressLint("MissingPermission")
     fun stop() {
+        // Huỷ mọi start() đang chờ ở thread nền và đánh thức latch của nó.
+        startGeneration++
+        isStarting = false
+        serviceAddedLatch?.countDown()
+
         try {
             if (isAdvertising) {
                 advertiser?.stopAdvertising(advertiseCallback)
@@ -340,13 +488,11 @@ class MuseBleServer(
 
         try {
             notifyLatch?.countDown()
-            txCharacteristic = null
             connectedDevice = null
             rxAssembler.reset()
             pairingProtocol?.resetSession()
             pairingProtocol = null
-            gattServer?.close()
-            gattServer = null
+            closeGattServer()
             Log.i(TAG, "Đã đóng Muse GATT Server")
         } catch (e: Exception) {
             Log.w(TAG, "Lỗi đóng GATT Server", e)
@@ -492,6 +638,10 @@ class MuseBleServer(
 
     companion object {
         private const val TAG = "MuseBleServer"
+
+        private const val BLUETOOTH_ENABLE_TIMEOUT_MS = 15_000L
+        private const val BLUETOOTH_POLL_INTERVAL_MS = 250L
+        private const val SERVICE_ADD_TIMEOUT_MS = 3_000L
 
         // Chuẩn Meta Muse Gadget
         const val SERVICE_UUID = "7fdd3d1c-38ea-46cf-8b46-314ecf5f240c"

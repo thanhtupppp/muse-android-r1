@@ -47,10 +47,13 @@ class MuseBlePairingProtocolTest {
     @Test
     fun fullBlePairingV5AndProvisionV2Handshake() {
         var capturedProvision: MuseBlePairingProtocol.ProvisionV2Request? = null
+        // Identity theo chuẩn Muse Gadget: deviceId "hatch-link:<mac>",
+        // nodeId "homelink-<6 hex cuối>" — hậu tố phải trùng tên BLE.
+        val identity = MuseIdentity.fromMac("FC:7C:02:57:41:8E")
         val protocol = MuseBlePairingProtocol(
-            deviceId = "R1-B617DD774B59B520",
-            nodeId = "R1-B617DD774B59B520",
-            macAddress = "FC:7C:02:57:41:8E",
+            deviceId = identity.deviceId,
+            nodeId = identity.nodeId,
+            macAddress = identity.mac,
             firmwareVersion = "1.0.0",
             onWifiScan = {
                 listOf(MuseBlePairingProtocol.WifiEntry("MyHomeWiFi", -48, true))
@@ -69,7 +72,8 @@ class MuseBlePairingProtocolTest {
         assertEquals(1, infoReplies.size)
         val info = TinyJson.parseObject(infoReplies[0])
         assertEquals("device_info", info["type"])
-        assertEquals("r1-b617dd774b59b520", info["device_id"])
+        assertEquals("hatch-link:fc:7c:02:57:41:8e", info["device_id"])
+        assertEquals("homelink-57418e", info["node_id"])
         assertEquals("fc:7c:02:57:41:8e", info["mac"])
         assertEquals("hatch_link", info["model"])
         assertEquals(5, (info["pairing_protocol"] as Number).toInt())
@@ -124,9 +128,9 @@ class MuseBlePairingProtocolTest {
         val ecdh = ka.generateSecret()
 
         val expectedTranscript = MuseBlePairingProtocol.buildTranscript(
-            deviceId = "r1-b617dd774b59b520",
-            nodeId = "r1-b617dd774b59b520",
-            mac = "fc:7c:02:57:41:8e",
+            deviceId = identity.deviceId,
+            nodeId = identity.nodeId,
+            mac = identity.mac,
             firmwareVersion = "1.0.0",
             policy = "confirm_app",
             confirmTimeoutSeconds = 0,
