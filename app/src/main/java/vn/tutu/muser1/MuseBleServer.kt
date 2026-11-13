@@ -308,8 +308,19 @@ class MuseBleServer(
      */
     @SuppressLint("MissingPermission")
     fun start() {
-        if (isAdvertising || isStarting) {
-            Log.d(TAG, "BLE Advertising đã đang chạy/đang khởi động, bỏ qua yêu cầu trùng")
+        if (isStarting || gattServer != null) {
+            // Server đã chạy thì start() là no-op — kể cả khi advertising
+            // đang TẮT. Sau cửa sổ pairing, loa đã pair tắt advertising có
+            // chủ đích (advertisingSuppressedByPolicy) nhưng GATT server vẫn
+            // sống; bản cũ chỉ chặn theo isAdvertising nên mọi intent về sau
+            // của AgentService (kể cả intent không liên quan như probe voice)
+            // đều dựng lại toàn bộ: đóng GATT server đang có central, tạo
+            // lại pairing protocol (xoá phiên pair đang dở) và phát nhanh
+            // lại từ đầu — tự phá chính sách "đã pair thì im lặng".
+            // Advertising thuộc quyền của chính sách cửa sổ pairing và
+            // reopenPairingWindow(); các đường lỗi thật đều đã null
+            // gattServer (closeGattServer) nên start() vẫn thử lại được.
+            Log.d(TAG, "BLE server đã chạy (advertising=$isAdvertising), bỏ qua start() trùng")
             return
         }
         isStarting = true
