@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import java.util.concurrent.Executors
 
 /**
  * Kênh cấu hình qua broadcast — ĐÃ KHOÁ bằng signature permission
@@ -61,8 +62,22 @@ class ProvisionReceiver : BroadcastReceiver() {
             return
         }
 
-        val result = WifiProvisioner.connect(context, ssid, password)
-        Log.i(TAG, "Wi‑Fi provisioning broadcast result: $result")
+        // WifiProvisioner.connect() có thể mất ~50 giây (chuyển radio + chờ
+        // DHCP) — chạy ngay trong onReceive sẽ vượt giới hạn ~10 giây của
+        // BroadcastReceiver và có thể bị hệ thống giết giữa chừng, để lại
+        // radio ở trạng thái dở dang. Đẩy xuống executor nền qua goAsync().
+        val appContext = context.applicationContext
+        val pendingResult = goAsync()
+        backgroundExecutor.execute {
+            try {
+                val result = WifiProvisioner.connect(appContext, ssid, password)
+                Log.i(TAG, "Wi‑Fi provisioning broadcast result: $result")
+            } catch (error: Exception) {
+                Log.e(TAG, "Wi‑Fi provisioning broadcast failed", error)
+            } finally {
+                pendingResult.finish()
+            }
+        }
     }
 
     private fun configureMuse(context: Context, intent: Intent) {
@@ -83,6 +98,8 @@ class ProvisionReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "MuseR1"
+
+        private val backgroundExecutor = Executors.newSingleThreadExecutor()
 
         const val ACTION_PROVISION_WIFI = "vn.tutu.muser1.PROVISION_WIFI"
         const val ACTION_CONFIGURE_MUSE = "vn.tutu.muser1.CONFIGURE_MUSE"

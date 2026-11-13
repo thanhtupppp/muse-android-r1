@@ -27,6 +27,12 @@ class DiscoveryResponder(
         }
 
         try {
+            // Bind socket TRƯỚC khi giữ MulticastLock: trước đây lock được lấy
+            // trước, nếu bind văng exception thì lock rò và giữ radio thức mãi.
+            socket = DatagramSocket(port).apply {
+                broadcast = true
+            }
+
             val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             try {
                 multicastLock = wifiManager?.createMulticastLock("muse_r1_discovery")?.apply {
@@ -35,10 +41,6 @@ class DiscoveryResponder(
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Không thể giữ MulticastLock", e)
-            }
-
-            socket = DatagramSocket(port).apply {
-                broadcast = true
             }
 
             listenerJob = CoroutineScope(Dispatchers.IO).launch {
@@ -75,6 +77,16 @@ class DiscoveryResponder(
             Log.i(TAG, "Discovery responder started on port $port")
         } catch (error: Exception) {
             Log.e(TAG, "Failed to start discovery responder", error)
+            // Dọn dẹp một phần đã khởi tạo để lần start() sau thử lại sạch.
+            try {
+                if (multicastLock?.isHeld == true) {
+                    multicastLock?.release()
+                }
+            } catch (_: Exception) {
+            }
+            multicastLock = null
+            socket?.close()
+            socket = null
         }
     }
 
@@ -93,19 +105,13 @@ class DiscoveryResponder(
     }
 
     private fun buildResponse(): String {
-        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-        val rawSsid = wifiManager?.connectionInfo?.ssid
-        val ssid = if (rawSsid.isNullOrBlank() || rawSsid == "<unknown ssid>") {
-            ""
-        } else {
-            rawSsid.removeSurrounding("\"")
-        }
-
+        // Chỉ trả về thông tin tối thiểu để Mobile nhận diện dịch vụ: KHÔNG
+        // còn device_id và SSID mạng nhà như trước (bất kỳ host nào trong LAN
+        // cũng quét được discovery này). IP của loa lấy từ địa chỉ nguồn của
+        // gói phản hồi; chi tiết trạng thái lấy qua /status (đã có auth).
         return JSONObject()
             .put("service", "muse-r1-agent")
-            .put("device_id", MusePreferences.getDeviceId(context))
             .put("agent_version", BuildConfig.VERSION_NAME)
-            .put("ssid", ssid)
             .put("muse_paired", MusePreferences.isMusePaired(context))
             .toString()
     }

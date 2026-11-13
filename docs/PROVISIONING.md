@@ -2,7 +2,7 @@
 
 ## Luồng thực tế trong source hiện tại
 
-Mobile cài Agent qua ADB over Wi-Fi, sau đó gửi cấu hình mạng nhà qua Bluetooth SPP. UDP discovery xác nhận loa xuất hiện lại trên mạng nhà.
+Mobile cài Agent qua ADB over Wi-Fi, sau đó gửi cấu hình mạng nhà **qua HTTP :8080 trước** (khi điện thoại đang nối hotspot của loa), **Bluetooth SPP là đường dự phòng** khi HTTP không tới được. UDP discovery xác nhận loa xuất hiện lại trên mạng nhà.
 
 ```text
 R1 phát hotspot Phicomm_R1_xxx
@@ -15,7 +15,7 @@ ADB TCP 5555: push APK và chạy pm install
         ↓
 AgentService khởi động trên R1
         ↓
-Bluetooth SPP: gửi SSID/password WPA2
+HTTP POST /provision-wifi: gửi SSID/password WPA2 (dự phòng: Bluetooth SPP)
         ↓
 R1 dùng WifiManager (Android 5.1.1 / API 22)
         ↓
@@ -27,9 +27,9 @@ UDP discovery :47808 xác nhận R1 xuất hiện lại
 ## Kênh kết nối
 
 - **ADB TCP 5555:** cài Agent APK. Mobile kiểm tra shell, file APK, kết quả cài đặt và trạng thái AgentService.
-- **Bluetooth SPP:** kênh provisioning chính. UUID: `00001101-0000-1000-8000-00805F9B34FB`.
-- **UDP 47808:** discovery sau khi loa chuyển sang Wi-Fi nhà.
-- **HTTP :8080:** Agent cung cấp GET `/health`, GET `/status` và POST `/provision-wifi`. Mobile hiện không dùng POST làm luồng provisioning chính. Endpoint POST chưa có xác thực riêng; không expose ra mạng không tin cậy.
+- **HTTP :8080:** kênh provisioning chính khi điện thoại đang ở hotspot của loa. Agent cung cấp GET `/health`, GET `/status`, POST `/provision-wifi`, POST `/configure-muse` và POST `/command`. Xác thực bằng provision token (header `x-muse-token`): loa chưa cấu hình Muse thì mở; đã cấu hình thì bắt buộc token, trừ cửa sổ 10 phút sau khi Agent khởi động/mở lại cửa sổ pairing. Mobile nhận token từ response cấu hình Muse và tự đính kèm sau đó.
+- **Bluetooth SPP:** kênh dự phòng khi HTTP không tới được. UUID: `00001101-0000-1000-8000-00805F9B34FB`. Mobile thử secure RFCOMM trước, insecure sau; loa đã cấu hình cũng kiểm tra provision token trong payload SPP.
+- **UDP 47808:** discovery sau khi loa chuyển sang Wi-Fi nhà. Phản hồi chỉ chứa tên dịch vụ, phiên bản Agent và cờ đã cấu hình Muse — không chứa device_id hay SSID.
 
 ## Android 5.1.1
 
@@ -41,10 +41,10 @@ Mobile gửi các dòng `MUSE_WIFI_CONFIG`, `ssid=...`, `password=...`, `securit
 
 ## Bảo mật và vận hành
 
-- Không ghi SSID, mật khẩu Wi-Fi hoặc Muse token vào log.
+- Không ghi mật khẩu Wi-Fi hoặc Muse token vào log (SSID chỉ ghi ở mức debug cần thiết).
 - Chỉ hỗ trợ WPA2 ở phiên bản hiện tại.
-- ADB chỉ dùng trong bước cài Agent; luồng gửi mật khẩu Wi-Fi thông thường dùng Bluetooth SPP.
-- HTTP `POST /provision-wifi` chưa có xác thực; cần giới hạn vòng đời server và bổ sung auth trước khi dùng làm luồng chính.
+- ADB dùng trong bước cài Agent và các thao tác khôi phục của chủ loa (mở lại cửa sổ pairing, giả lập nút bấm confirm_press qua intent của AgentService).
+- HTTP :8080 và SPP đều đã có xác thực bằng provision token sau khi loa được cấu hình Muse; trước thời điểm đó chúng mở trong phạm vi hotspot/cặp ghép Bluetooth của chính loa (mô hình cài đặt ban đầu, tương tự `pairing_auth = none` của Muse Gadget SDK).
 
 ## Xử lý sự cố
 

@@ -9,6 +9,7 @@ import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -20,6 +21,7 @@ import java.util.UUID
 
 class BluetoothProvisioner(private val context: Context) {
     companion object {
+        private const val TAG = "MuseMobile"
         private val MUSE_R1_SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
         private const val DEVICE_NAME_PREFIX = "Phicomm_R1_"
         private const val STOCK_NAME_PREFIX = "Phicomm R1"
@@ -112,33 +114,52 @@ class BluetoothProvisioner(private val context: Context) {
                 "Mật khẩu cần rỗng (mạng mở), từ 8 đến 63 ký tự hoặc khóa hex 64 ký tự"
             }
 
-            // Thử insecure RFCOMM trước để không bị Android 5.1/14 ép hủy liên kết bonding
-            val socket = try {
-                device.createInsecureRfcommSocketToServiceRecord(MUSE_R1_SPP_UUID)
-            } catch (_: Exception) {
-                device.createRfcommSocketToServiceRecord(MUSE_R1_SPP_UUID)
-            }
+            // Thử secure RFCOMM TRƯỚC (liên kết có xác thực/mã hoá ở tầng
+            // Bluetooth — SPP server của Agent cũng là secure socket);
+            // insecure chỉ là dự phòng khi secure thất bại trên stack cũ.
+            // Trước đây thứ tự ngược lại nên mật khẩu Wi-Fi có thể đi qua
+            // liên kết không xác thực dù cả hai đầu đều hỗ trợ secure.
             try {
-                try {
-                    withTimeout(CONNECT_TIMEOUT_MS) {
-                        socket.connect()
-                    }
-                } catch (e: TimeoutCancellationException) {
-                    throw IOException("Quá hạn kết nối Bluetooth tới ${device.name ?: "R1"} (${CONNECT_TIMEOUT_MS / 1000}s)", e)
-                }
-
-                sendProvisionPayload(socket, ssid, password, token)
-
-                try {
-                    withTimeout(RESPONSE_TIMEOUT_MS) {
-                        readResponse(socket)
-                    }
-                } catch (e: TimeoutCancellationException) {
-                    throw IOException("Quá hạn chờ R1 xác nhận kết nối Wi-Fi (${RESPONSE_TIMEOUT_MS / 1000}s)", e)
-                }
-            } finally {
-                runCatching { socket.close() }
+                provisionViaSocket(device, secure = true, ssid, password, token)
+            } catch (secureError: Exception) {
+                Log.w(TAG, "Secure RFCOMM thất bại (${secureError.message}); thử insecure RFCOMM", secureError)
+                provisionViaSocket(device, secure = false, ssid, password, token)
             }
+        }
+    }
+
+    private suspend fun provisionViaSocket(
+        device: BluetoothDevice,
+        secure: Boolean,
+        ssid: String,
+        password: String,
+        token: String?
+    ): String? {
+        val socket = if (secure) {
+            device.createRfcommSocketToServiceRecord(MUSE_R1_SPP_UUID)
+        } else {
+            device.createInsecureRfcommSocketToServiceRecord(MUSE_R1_SPP_UUID)
+        }
+        try {
+            try {
+                withTimeout(CONNECT_TIMEOUT_MS) {
+                    socket.connect()
+                }
+            } catch (e: TimeoutCancellationException) {
+                throw IOException("Quá hạn kết nối Bluetooth tới ${device.name ?: "R1"} (${CONNECT_TIMEOUT_MS / 1000}s)", e)
+            }
+
+            sendProvisionPayload(socket, ssid, password, token)
+
+            try {
+                return withTimeout(RESPONSE_TIMEOUT_MS) {
+                    readResponse(socket)
+                }
+            } catch (e: TimeoutCancellationException) {
+                throw IOException("Quá hạn chờ R1 xác nhận kết nối Wi-Fi (${RESPONSE_TIMEOUT_MS / 1000}s)", e)
+            }
+        } finally {
+            runCatching { socket.close() }
         }
     }
 

@@ -25,6 +25,17 @@ object WifiProvisioner {
         p.isEmpty() || p.length in 8..63 ||
             (p.length == 64 && p.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' })
 
+    /**
+     * Bọc giá trị cho WifiConfiguration đúng định dạng: đặt trong dấu ngoặc
+     * kép và escape `\` + `"` bên trong. Trước đây chỉ nối chuỗi thô nên
+     * SSID/mật khẩu chứa hai ký tự này (hoàn toàn hợp lệ trong WPA) làm hỏng
+     * cấu hình và kết nối thất bại khó hiểu.
+     */
+    private fun quoteWifiValue(raw: String): String {
+        val escaped = raw.replace("\\", "\\\\").replace("\"", "\\\"")
+        return "\"$escaped\""
+    }
+
     fun connect(context: Context, ssid: String, password: String): ProvisionResult =
         synchronized(lock) {
             val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
@@ -103,7 +114,7 @@ object WifiProvisioner {
             }
 
             val configuration = WifiConfiguration().apply {
-                SSID = "\"$cleanSsid\""
+                SSID = quoteWifiValue(cleanSsid)
 
                 if (password.isEmpty()) {
                     allowedKeyManagement.clear()
@@ -112,7 +123,7 @@ object WifiProvisioner {
                     val isHexPsk = password.length == 64 && password.all {
                         it.isDigit() || it in 'a'..'f' || it in 'A'..'F'
                     }
-                    preSharedKey = if (isHexPsk) password else "\"$password\""
+                    preSharedKey = if (isHexPsk) password else quoteWifiValue(password)
 
                     allowedKeyManagement.clear()
                     allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK)
@@ -125,12 +136,11 @@ object WifiProvisioner {
                 status = WifiConfiguration.Status.ENABLED
             }
 
-            // Xóa cấu hình cũ của SSID này trước để tránh xung đột quyền/UID
+            // Giữ cấu hình cũ của SSID này làm phương án dự phòng và CHỈ xoá
+            // sau khi cấu hình mới kết nối thành công. Trước đây xoá trước nên
+            // provision sai một lần (nhầm mật khẩu, AP chậm...) là mất luôn
+            // cấu hình đang chạy, loa có thể rớt mạng hẳn.
             val existingId = findExistingNetworkId(wifiManager, cleanSsid)
-            if (existingId != -1) {
-                Log.i(TAG, "Xóa mạng cũ existingId=$existingId trước khi thêm cấu hình mới")
-                wifiManager.removeNetwork(existingId)
-            }
 
             val networkId = wifiManager.addNetwork(configuration)
             if (networkId == -1) {
@@ -139,8 +149,16 @@ object WifiProvisioner {
 
             Log.i(TAG, "Wi-Fi networkId=$networkId đã thêm vào hệ thống")
 
+            // addNetwork có thể gộp vào cấu hình cũ khi SSID trùng (trả về
+            // chính existingId): khi đó cấu hình cũ đã bị ghi đè tại chỗ,
+            // không còn bản sao để khôi phục và tuyệt đối không được
+            // removeNetwork(id này) ở các nhánh lỗi bên dưới.
+            val mergedWithExisting = existingId != -1 && networkId == existingId
+
             if (!wifiManager.enableNetwork(networkId, true)) {
-                wifiManager.removeNetwork(networkId)
+                if (!mergedWithExisting) {
+                    wifiManager.removeNetwork(networkId)
+                }
                 return ProvisionResult.Failure("ENABLE_NETWORK_FAILED", apWasDisabledByUs)
             }
 
@@ -149,11 +167,18 @@ object WifiProvisioner {
 
             val ip = waitForConnection(wifiManager, cleanSsid)
             if (ip != null) {
+                if (existingId != -1 && !mergedWithExisting) {
+                    Log.i(TAG, "Kết nối mới ổn định; xoá cấu hình cũ existingId=$existingId")
+                    wifiManager.removeNetwork(existingId)
+                    wifiManager.saveConfiguration()
+                }
                 ProvisionResult.Success(ip)
             } else {
-                Log.w(TAG, "Kết nối thất bại, dọn dẹp networkId=$networkId khỏi danh sách lưu")
-                wifiManager.removeNetwork(networkId)
-                wifiManager.saveConfiguration()
+                Log.w(TAG, "Kết nối thất bại, dọn dẹp networkId=$networkId và giữ lại cấu hình cũ")
+                if (!mergedWithExisting) {
+                    wifiManager.removeNetwork(networkId)
+                    wifiManager.saveConfiguration()
+                }
                 ProvisionResult.Failure("CONNECT_TIMEOUT", apWasDisabledByUs)
             }
         } catch (e: InterruptedException) {
@@ -168,7 +193,7 @@ object WifiProvisioner {
 
     @Suppress("DEPRECATION")
     private fun waitForConnection(wifiManager: WifiManager, ssid: String): String? {
-        val expected = "\"$ssid\""
+        val expected = quoteWifiValue(ssid)
         val deadline = System.currentTimeMillis() + CONNECT_TIMEOUT_MS
 
         while (System.currentTimeMillis() < deadline) {
@@ -237,6 +262,7 @@ object WifiProvisioner {
     @Suppress("DEPRECATION")
     private fun findExistingNetworkId(wifiManager: WifiManager, ssid: String): Int {
         val networks = wifiManager.configuredNetworks ?: return -1
-        return networks.firstOrNull { it.SSID == "\"$ssid\"" }?.networkId ?: -1
+        val quoted = quoteWifiValue(ssid)
+        return networks.firstOrNull { it.SSID == quoted || it.SSID == "\"$ssid\"" }?.networkId ?: -1
     }
 }

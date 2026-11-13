@@ -377,7 +377,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                 if (discovered != null) {
                     currentSpeakerIp = discovered.ipAddress
                     discoveryLog += "UDP Discovery: tìm thấy R1 tại ${discovered.ipAddress}"
-                    discoveryLog += "SSID trên R1: ${discovered.ssid}"
+                    discoveryLog += "Muse: ${if (discovered.musePaired) "đã cấu hình" else "chưa cấu hình"} (discovery không còn phát SSID/device_id của loa)"
                 } else {
                     discoveryLog += "UDP Discovery: không nhận được phản hồi trong 4 giây."
                     discoveryLog += "Thử tiếp địa chỉ gần nhất: $speakerIp"
@@ -448,6 +448,16 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                 cm.bindProcessToNetwork(wifiNet)
             }
 
+            // Phải gỡ bind khi đã gửi xong cấu hình: trước đây process bị ghim
+            // vĩnh viễn vào Network của hotspot loa, khiến các lần gọi API/
+            // chẩn đoán sau (khi điện thoại đã về Wi-Fi nhà) có thể bị định
+            // tuyến vào mạng cũ đã biến mất.
+            fun unbindProcessNetwork() {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    runCatching { cm?.bindProcessToNetwork(null) }
+                }
+            }
+
             // 1. Thử gửi trực tiếp qua HTTP (khi điện thoại đang nối Wi-Fi Phicomm_R1_xxx)
             val targetHttpIp = if (speakerIp.isNotBlank()) speakerIp.trim() else "192.168.43.1"
             val isHttpAvailable = runCatching {
@@ -466,6 +476,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
 
                 if (httpResult.isSuccess) {
                     status = "R1 đã nhận cấu hình Wi‑Fi! Đang đợi R1 kết nối vào mạng ${network.ssid}..."
+                    unbindProcessNetwork()
                     waitForR1OnHomeNetwork(targetSsid = network.ssid)
                     return@launch
                 } else {
@@ -479,6 +490,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                     "Không thể gửi cấu hình tới loa: Không có kết nối HTTP tới $targetHttpIp và chưa ghép đôi Bluetooth với R1. Hãy kết nối Wi‑Fi điện thoại vào mạng loa (Phicomm_R1_xxx) rồi thử lại.",
                     code = "NO_TRANSPORT_AVAILABLE"
                 )
+                unbindProcessNetwork()
                 return@launch
             }
 
@@ -494,6 +506,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                 token = authToken()
             ).fold(
                 onSuccess = { ip ->
+                    unbindProcessNetwork()
                     if (!ip.isNullOrBlank()) {
                         currentSpeakerIp = ip
                         status = "R1 đã kết nối Wi‑Fi nhà tại $ip! Đang kiểm tra kết nối..."
@@ -510,6 +523,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                     )
                 }
             )
+            unbindProcessNetwork()
         }
     }
 
