@@ -137,6 +137,9 @@ class AgentService : Service() {
         startProvisioningServer()
         startBluetoothProvisionServer()
         startMuseBleServer()
+        if (intent?.action == ACTION_REOPEN_PAIRING_WINDOW) {
+            museBleServer?.reopenPairingWindow()
+        }
         startDiscoveryResponder()
         startTelemetry()
         val forceReload = intent?.action == ACTION_RELOAD_MUSE_SESSION
@@ -172,6 +175,7 @@ class AgentService : Service() {
 
         museBleServer?.stop()
         museBleServer = null
+        setCurrentBleServer(null)
 
         discoveryResponder?.stop()
         discoveryResponder = null
@@ -240,6 +244,7 @@ class AgentService : Service() {
             museBleServer = MuseBleServer(this) {
                 startMuseSession(forceRestart = true)
             }
+            setCurrentBleServer(museBleServer)
         }
         museBleServer?.start()
     }
@@ -317,6 +322,7 @@ class AgentService : Service() {
     companion object {
         private const val TAG = "MuseR1"
         private const val ACTION_RELOAD_MUSE_SESSION = "vn.tutu.muser1.ACTION_RELOAD_MUSE_SESSION"
+        private const val ACTION_REOPEN_PAIRING_WINDOW = "vn.tutu.muser1.ACTION_REOPEN_PAIRING_WINDOW"
         private const val NOTIFICATION_ID = 1001
         private const val TELEMETRY_INTERVAL_SECONDS = 30L
         private const val READY_ANNOUNCEMENT_DELAY_MS = 800L
@@ -336,6 +342,15 @@ class AgentService : Service() {
         var lastMuseError: String = ""
             private set
 
+        /** BLE server đang sống, để /status đọc trạng thái quảng bá/pair. */
+        @Volatile
+        var currentBleServer: MuseBleServer? = null
+            private set
+
+        internal fun setCurrentBleServer(server: MuseBleServer?) {
+            currentBleServer = server
+        }
+
         fun start(context: Context) {
             val intent = Intent(context, AgentService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -348,6 +363,18 @@ class AgentService : Service() {
         fun reloadMuseSession(context: Context) {
             val intent = Intent(context, AgentService::class.java).apply {
                 action = ACTION_RELOAD_MUSE_SESSION
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(context, intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        /** Mở lại cửa sổ pairing BLE qua ADB, không cần restart Agent/loa. */
+        fun reopenPairingWindow(context: Context) {
+            val intent = Intent(context, AgentService::class.java).apply {
+                action = ACTION_REOPEN_PAIRING_WINDOW
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 ContextCompat.startForegroundService(context, intent)

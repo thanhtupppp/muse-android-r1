@@ -19,6 +19,7 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import android.os.ParcelUuid
 import android.util.Log
+import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
@@ -94,6 +95,17 @@ class MuseBleServer(
     @Volatile
     private var advPolicyFuture: ScheduledFuture<*>? = null
 
+    /** Mode/txPower advertising hiện hành, để phát lại đúng sau disconnect. */
+    @Volatile
+    private var advertisingMode: Int = AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY
+
+    @Volatile
+    private var advertisingTxPower: Int = AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
+
+    /** True khi chính sách cửa sổ pairing đã chủ động tắt advertising (đã pair). */
+    @Volatile
+    private var advertisingSuppressedByPolicy: Boolean = false
+
     private val rxAssembler = MuseBleFramer.RxAssembler()
     private var pairingProtocol: MuseBlePairingProtocol? = null
     private var bleRxExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -157,6 +169,7 @@ class MuseBleServer(
                         rxAssembler.reset()
                         pairingProtocol?.resetSession()
                         notifyLatch?.countDown()
+                        restartAdvertisingAfterDisconnect()
                     }
                 }
             }
@@ -531,6 +544,9 @@ class MuseBleServer(
 
     @SuppressLint("MissingPermission")
     private fun startAdvertisingInternal(leAdvertiser: BluetoothLeAdvertiser, mode: Int, txPower: Int) {
+        advertisingMode = mode
+        advertisingTxPower = txPower
+        advertisingSuppressedByPolicy = false
         try {
             leAdvertiser.stopAdvertising(advertiseCallback)
         } catch (_: Exception) {}
@@ -563,6 +579,80 @@ class MuseBleServer(
 
         leAdvertiser.startAdvertising(settings, advertiseData, scanResponse, advertiseCallback)
         Log.i(TAG, "Bắt đầu phát sóng Meta Muse BLE Advertising (mode=$mode, txPower=$txPower)...")
+    }
+
+    /**
+     * Nhiều chipset Android dừng connectable advertising trong lúc có kết
+     * nối và không tự phát lại sau khi central ngắt — nếu không phát lại ở
+     * đây, loa sẽ biến mất khỏi mọi lần quét cho tới khi Agent restart.
+     * Chỉ phát lại khi chính sách cửa sổ pairing chưa chủ động tắt.
+     */
+    @SuppressLint("MissingPermission")
+    private fun restartAdvertisingAfterDisconnect() {
+        if (gattServer == null) return
+        if (advertisingSuppressedByPolicy) {
+            Log.i(TAG, "Không phát lại advertising sau disconnect: chính sách pairing đã tắt")
+            return
+        }
+        val adv = advertiser ?: return
+        try {
+            startAdvertisingInternal(adv, advertisingMode, advertisingTxPower)
+            Log.i(TAG, "Đã phát lại BLE advertising sau khi central ngắt kết nối")
+        } catch (e: Exception) {
+            Log.w(TAG, "Lỗi phát lại BLE advertising sau disconnect", e)
+        }
+    }
+
+    /**
+     * Mở lại cửa sổ pairing (phát nhanh 10 phút) mà không cần restart Agent —
+     * gọi qua broadcast ADB vn.tutu.muser1.REOPEN_PAIRING_WINDOW khi app Muse
+     * không còn thấy loa vì cửa sổ cũ đã đóng.
+     */
+    @SuppressLint("MissingPermission")
+    fun reopenPairingWindow() {
+        if (gattServer == null) {
+            Log.i(TAG, "BLE server chưa chạy: start() để mở cửa sổ pairing")
+            start()
+            return
+        }
+        val adv = advertiser
+        if (adv == null) {
+            Log.w(TAG, "Không có advertiser để mở lại cửa sổ pairing, thử start() lại")
+            start()
+            return
+        }
+        try {
+            startAdvertisingInternal(
+                adv,
+                AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY,
+                AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
+            )
+            scheduleAdvertisingPolicy(startGeneration)
+            Log.i(TAG, "Đã mở lại cửa sổ pairing BLE (phát nhanh ${PAIRING_WINDOW_MS / 60_000} phút)")
+        } catch (e: Exception) {
+            lastStartError = "REOPEN_WINDOW_EXCEPTION:${e.javaClass.simpleName}"
+            Log.e(TAG, "Lỗi mở lại cửa sổ pairing BLE", e)
+        }
+    }
+
+    /** Trạng thái BLE server để LocalProvisionServer phơi qua GET /status. */
+    fun statusJson(): JSONObject {
+        val identity = try {
+            MusePreferences.getMuseIdentity(context)
+        } catch (e: Exception) {
+            null
+        }
+        return JSONObject()
+            .put("running", gattServer != null)
+            .put("advertising", isAdvertising)
+            .put("starting", isStarting)
+            .put("last_start_error", lastStartError ?: "")
+            .put("advertising_suppressed_by_policy", advertisingSuppressedByPolicy)
+            .put("central_connected", connectedDevice != null)
+            .put("confirm_press_armed", SpeakerButtonMonitor.isArmed())
+            .put("ble_name", identity?.bleName ?: "")
+            .put("node_id", identity?.nodeId ?: "")
+            .put("device_id", identity?.deviceId ?: "")
     }
 
     private fun ensureAdvScheduler(): ScheduledExecutorService {
@@ -629,8 +719,9 @@ class MuseBleServer(
         isAdvertising = false
         if (paired) {
             // Giống bản ESP32 gốc: setup xong thì tắt advertising setup.
-            // GATT server vẫn mở; muốn pair lại thì khởi động lại Agent
-            // (hoặc gọi start()) để mở cửa sổ pairing mới.
+            // GATT server vẫn mở; muốn pair lại thì mở cửa sổ pairing mới
+            // bằng reopenPairingWindow() (broadcast ADB) hoặc restart Agent.
+            advertisingSuppressedByPolicy = true
             Log.i(TAG, "Hết cửa sổ pairing và thiết bị đã pair: dừng BLE advertising")
         } else {
             Log.i(TAG, "Hết cửa sổ pairing, thiết bị chưa pair: hạ advertising xuống LOW_POWER")

@@ -309,6 +309,10 @@ class LocalProvisionServer(
             .put("scan_mode", btAdapter?.scanMode ?: -1)
             .put("multi_adv", btAdapter?.isMultipleAdvertisementSupported ?: false)
             .put("le_advertiser", btAdapter?.bluetoothLeAdvertiser != null)
+            // Trạng thái sống của Muse BLE server (advertising, lỗi khởi
+            // động gần nhất, identity) để chẩn đoán từ xa khi app Muse
+            // không thấy loa.
+            .put("server", AgentService.currentBleServer?.statusJson() ?: JSONObject())
 
         return JSONObject()
             .put("ok", true)

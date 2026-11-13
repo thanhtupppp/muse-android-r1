@@ -20,6 +20,9 @@ import android.util.Log
  * Giả lập bấm nút tròn trên loa (xác nhận pair confirm_press, để kiểm chứng
  * cơ chế khi chưa chắc nút thật phát keycode nào):
  * adb shell am broadcast -a vn.tutu.muser1.CONFIRM_PAIRING_PRESS
+ *
+ * Mở lại cửa sổ pairing BLE 10 phút (khi app Muse không còn thấy loa):
+ * adb shell am broadcast -a vn.tutu.muser1.REOPEN_PAIRING_WINDOW
  */
 class ProvisionReceiver : BroadcastReceiver() {
 
@@ -30,6 +33,10 @@ class ProvisionReceiver : BroadcastReceiver() {
             ACTION_CONFIRM_PAIRING_PRESS -> {
                 Log.i(TAG, "Nhận CONFIRM_PAIRING_PRESS qua broadcast (giả lập nút tròn)")
                 SpeakerButtonMonitor.notePress("adb_broadcast")
+            }
+            ACTION_REOPEN_PAIRING_WINDOW -> {
+                Log.i(TAG, "Nhận REOPEN_PAIRING_WINDOW qua broadcast: mở lại cửa sổ pairing BLE")
+                AgentService.reopenPairingWindow(context)
             }
         }
     }
@@ -81,6 +88,7 @@ class ProvisionReceiver : BroadcastReceiver() {
         const val ACTION_CONFIGURE_MUSE = "vn.tutu.muser1.CONFIGURE_MUSE"
         const val ACTION_CONFIGURE_AGENT = "vn.tutu.muser1.CONFIGURE_AGENT"
         const val ACTION_CONFIRM_PAIRING_PRESS = "vn.tutu.muser1.CONFIRM_PAIRING_PRESS"
+        const val ACTION_REOPEN_PAIRING_WINDOW = "vn.tutu.muser1.REOPEN_PAIRING_WINDOW"
 
         const val EXTRA_SSID = "ssid"
         const val EXTRA_PASSWORD = "password"

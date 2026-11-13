@@ -34,6 +34,7 @@
                 <action android:name="vn.tutu.muser1.CONFIGURE_MUSE" />
                 <action android:name="vn.tutu.muser1.CONFIGURE_AGENT" />
                 <action android:name="vn.tutu.muser1.CONFIRM_PAIRING_PRESS" />
+                <action android:name="vn.tutu.muser1.REOPEN_PAIRING_WINDOW" />
             </intent-filter>
         </receiver>
 
