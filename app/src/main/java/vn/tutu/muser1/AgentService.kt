@@ -25,6 +25,7 @@ class AgentService : Service() {
     private var provisionServer: LocalProvisionServer? = null
     private var discoveryResponder: DiscoveryResponder? = null
     private var bluetoothProvisionServer: BluetoothProvisionServer? = null
+    private var museBleServer: MuseBleServer? = null
     private var museSessionAdapter: MuseSessionAdapter? = null
     private var mqttAgent: MqttAgent? = null
     private var telemetryReporter: TelemetryReporter? = null
@@ -101,9 +102,11 @@ class AgentService : Service() {
         startForeground(NOTIFICATION_ID, buildForegroundNotification())
         startProvisioningServer()
         startBluetoothProvisionServer()
+        startMuseBleServer()
         startDiscoveryResponder()
         startTelemetry()
-        startMuseSession()
+        val forceReload = intent?.action == ACTION_RELOAD_MUSE_SESSION
+        startMuseSession(forceRestart = forceReload)
         announceReadyWhenAvailable()
         return START_STICKY
     }
@@ -130,6 +133,9 @@ class AgentService : Service() {
 
         bluetoothProvisionServer?.stop()
         bluetoothProvisionServer = null
+
+        museBleServer?.stop()
+        museBleServer = null
 
         discoveryResponder?.stop()
         discoveryResponder = null
@@ -193,6 +199,15 @@ class AgentService : Service() {
         bluetoothProvisionServer?.start()
     }
 
+    private fun startMuseBleServer() {
+        if (museBleServer == null) {
+            museBleServer = MuseBleServer(this) {
+                startMuseSession(forceRestart = true)
+            }
+        }
+        museBleServer?.start()
+    }
+
     private fun startDiscoveryResponder() {
         if (discoveryResponder == null) {
             discoveryResponder = DiscoveryResponder(this)
@@ -235,7 +250,7 @@ class AgentService : Service() {
         )
     }
 
-    private fun startMuseSession() {
+    private fun startMuseSession(forceRestart: Boolean = false) {
         val deviceId = MusePreferences.getDeviceId(this)
 
         if (deviceId.isEmpty()) {
@@ -243,23 +258,29 @@ class AgentService : Service() {
             return
         }
 
-        if (museSessionAdapter?.isConnected() == true) {
+        if (!forceRestart && museSessionAdapter != null) {
             return
         }
 
         museSessionAdapter?.stop()
+        isMuseConnected = false
+        lastMuseError = ""
 
-        museSessionAdapter = MuseSessionAdapter(
+        val adapter = MuseSessionAdapter(
             context = this,
             deviceId = deviceId,
             commandSurface = MuseCommandSurface(this)
-        )
-
-        museSessionAdapter?.start()
+        ) { connected, error ->
+            isMuseConnected = connected
+            lastMuseError = error
+        }
+        museSessionAdapter = adapter
+        adapter.start()
     }
 
     companion object {
         private const val TAG = "MuseR1"
+        private const val ACTION_RELOAD_MUSE_SESSION = "vn.tutu.muser1.ACTION_RELOAD_MUSE_SESSION"
         private const val NOTIFICATION_ID = 1001
         private const val TELEMETRY_INTERVAL_SECONDS = 30L
         private const val READY_ANNOUNCEMENT_DELAY_MS = 800L
@@ -271,8 +292,27 @@ class AgentService : Service() {
         var isRunning: Boolean = false
             private set
 
+        @Volatile
+        var isMuseConnected: Boolean = false
+            private set
+
+        @Volatile
+        var lastMuseError: String = ""
+            private set
+
         fun start(context: Context) {
             val intent = Intent(context, AgentService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(context, intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun reloadMuseSession(context: Context) {
+            val intent = Intent(context, AgentService::class.java).apply {
+                action = ACTION_RELOAD_MUSE_SESSION
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 ContextCompat.startForegroundService(context, intent)
             } else {

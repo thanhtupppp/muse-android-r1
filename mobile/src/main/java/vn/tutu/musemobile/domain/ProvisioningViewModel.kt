@@ -80,6 +80,18 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         private set
     val museTokenInput: String get() = currentMuseTokenInput
 
+    var useDirectVmConfig by mutableStateOf(true)
+        private set
+
+    var currentNoiseHost by mutableStateOf("hatch.metaaivm.com")
+        private set
+
+    var currentVmId by mutableStateOf("")
+        private set
+
+    var currentDeviceToken by mutableStateOf("")
+        private set
+
     var isPairingMuse by mutableStateOf(false)
         private set
 
@@ -87,6 +99,9 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         private set
 
     var isMusePaired by mutableStateOf(false)
+        private set
+
+    var isMuseConnected by mutableStateOf(false)
         private set
 
     var speakerVolume by mutableStateOf(70)
@@ -128,6 +143,69 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         currentMuseTokenInput = value.trim()
     }
 
+    fun setDirectMode(enabled: Boolean) {
+        useDirectVmConfig = enabled
+    }
+
+    fun setNoiseHost(value: String) {
+        currentNoiseHost = value.trim()
+    }
+
+    fun setVmId(value: String) {
+        currentVmId = value.trim()
+    }
+
+    fun setDeviceToken(value: String) {
+        currentDeviceToken = value.trim()
+    }
+
+    fun configureMuseDirect(
+        ip: String? = null,
+        serverHost: String? = null,
+        vmId: String? = null,
+        deviceToken: String? = null
+    ) {
+        val targetIp = (ip ?: speakerIp).trim()
+        val host = (serverHost ?: currentNoiseHost).trim().ifEmpty { "hatch.metaaivm.com" }
+        val cleanVm = (vmId ?: currentVmId).trim()
+        val cleanTok = (deviceToken ?: currentDeviceToken).trim()
+
+        if (cleanVm.isEmpty()) {
+            musePairStatus = "Vui lòng nhập VM ID"
+            return
+        }
+        if (cleanTok.isEmpty()) {
+            musePairStatus = "Vui lòng nhập Device Token"
+            return
+        }
+
+        viewModelScope.launch {
+            isPairingMuse = true
+            isMuseConnected = false
+            musePairStatus = "Đang gửi cấu hình Direct VM tới R1 ($targetIp:8080)..."
+            apiClient.configureMuseDirect(
+                speakerIp = targetIp,
+                serverHost = host,
+                vmId = cleanVm,
+                deviceToken = cleanTok
+            ).fold(
+                onSuccess = { res ->
+                    isMusePaired = true
+                    val devId = res.optString("device_id", "R1")
+                    val savedHost = res.optString("noise_host", host)
+                    val savedVm = res.optString("vm_id", cleanVm)
+                    musePairStatus = "✅ Đã lưu Direct VM ($savedHost / $savedVm) cho $devId. Đang kết nối Noise XX..."
+                    kotlinx.coroutines.delay(2500)
+                    checkMuseStatus(targetIp)
+                },
+                onFailure = { err ->
+                    musePairStatus = "❌ Lưu cấu hình thất bại: ${err.message}"
+                }
+            )
+            isPairingMuse = false
+        }
+    }
+
     fun configureMuseToken(ip: String? = null, token: String? = null) {
         val targetIp = (ip ?: speakerIp).trim()
         val rawToken = (token ?: museTokenInput).trim()
@@ -144,12 +222,15 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
 
         viewModelScope.launch {
             isPairingMuse = true
+            isMuseConnected = false
             musePairStatus = "Đang gửi Muse Token tới R1 ($targetIp:8080)..."
             apiClient.configureMuse(speakerIp = targetIp, museToken = rawToken).fold(
                 onSuccess = { res ->
                     isMusePaired = true
                     val devId = res.optString("device_id", "R1")
                     musePairStatus = "✅ Đã ghép đôi thành công! Thiết bị: $devId"
+                    kotlinx.coroutines.delay(2500)
+                    checkMuseStatus(targetIp)
                 },
                 onFailure = { err ->
                     musePairStatus = "❌ Ghép đôi thất bại: ${err.message}"
@@ -166,10 +247,26 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
             apiClient.status(speakerIp = targetIp).fold(
                 onSuccess = { res ->
                     val paired = res.optBoolean("muse_paired", false)
+                    val connected = res.optBoolean("muse_connected", false)
+                    val mode = res.optString("muse_mode", "none")
+                    val host = res.optString("noise_host", "hatch.metaaivm.com")
+                    val vmId = res.optString("vm_id", "")
+                    val museErr = res.optString("muse_error", "")
                     val devId = res.optString("device_id", "")
                     val net = res.optString("network", "")
                     isMusePaired = paired
-                    commandResult = "Trạng thái R1:\n• ID thiết bị: $devId\n• Trạng thái Muse: ${if (paired) "ĐÃ GHÉP ĐÔI ✅" else "Chưa ghép đôi ❌"}\n• Mạng: $net"
+                    isMuseConnected = connected
+                    val sb = StringBuilder()
+                    sb.append("Trạng thái R1:\n")
+                    sb.append("• ID: $devId\n")
+                    sb.append("• Chế độ Muse: $mode (${if (paired) "Đã cấu hình ✅" else "Chưa cấu hình ❌"})\n")
+                    sb.append("• Kết nối Noise XX: ${if (connected) "ĐÃ KẾT NỐI CLOUD ✅" else "Chưa kết nối ⏳"}\n")
+                    sb.append("• Server: $host")
+                    if (vmId.isNotEmpty()) sb.append(" | VM: $vmId")
+                    sb.append("\n")
+                    if (museErr.isNotEmpty()) sb.append("• Chi tiết: $museErr\n")
+                    sb.append("• Mạng: $net")
+                    commandResult = sb.toString()
                 },
                 onFailure = { err ->
                     commandResult = "Không kết nối được R1: ${err.message}"

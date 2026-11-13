@@ -5,7 +5,9 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.URL
+import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 
 /**
@@ -39,9 +41,42 @@ object MuseApi {
         val refreshToken: String
     )
 
-    fun fetchVms(accessToken: String): Pair<List<MuseVm>, Int?> {
+    fun resolveApiRoot(apiBaseUrl: String = ""): String {
+        return apiBaseUrl.trim().ifEmpty { API_BASE }.trimEnd('/')
+    }
+
+    fun deriveVmId(rawVmId: String, vmUrl: String): String {
+        val clean = rawVmId.trim()
+        if (clean.isNotEmpty()) return clean
+        return try {
+            val uri = URI(vmUrl)
+            val fromQuery = uri.rawQuery.orEmpty()
+                .split('&')
+                .firstOrNull { it.startsWith("vm_id=") }
+                ?.substringAfter("vm_id=")
+                ?.let { URLDecoder.decode(it, "UTF-8") }
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            if (fromQuery != null) return fromQuery
+            val host = uri.host.orEmpty()
+            host.substringBefore('.').takeIf { it.isNotEmpty() && host.contains('.') }.orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    fun extractNoiseHost(vmUrl: String, fallback: String = MusePreferences.DEFAULT_NOISE_HOST): String {
+        return try {
+            val host = URI(vmUrl).host?.trim().orEmpty()
+            host.ifEmpty { fallback }
+        } catch (_: Exception) {
+            fallback
+        }
+    }
+
+    fun fetchVms(accessToken: String, apiBaseUrl: String = API_BASE): Pair<List<MuseVm>, Int?> {
         val connection = openConnection(
-            url = API_BASE + FETCH_PATH,
+            url = resolveApiRoot(apiBaseUrl) + FETCH_PATH,
             method = "GET",
             accessToken = "Bearer $accessToken"
         )
@@ -73,7 +108,7 @@ object MuseApi {
                 if (vmUrl.isNotEmpty() && vmToken.isNotEmpty()) {
                     vms.add(
                         MuseVm(
-                            vmId = item.optString("vm_id"),
+                            vmId = deriveVmId(item.optString("vm_id"), vmUrl),
                             vmName = item.optString("vm_name"),
                             vmUrl = vmUrl,
                             vmAuthToken = vmToken,
@@ -95,9 +130,10 @@ object MuseApi {
     fun refreshDeviceToken(
         refreshToken: String,
         deviceId: String,
-        sdkToken: String? = null
+        sdkToken: String? = null,
+        apiBaseUrl: String = API_BASE
     ): Pair<TokenPair?, Int?> {
-        val cleanRefreshToken = refreshToken.substringAfterLast(":")
+        val cleanRefreshToken = refreshToken.trim().substringAfterLast(":")
         val payload = JSONObject()
             .put("device_id", deviceId)
             .apply {
@@ -113,7 +149,7 @@ object MuseApi {
         }
 
         val connection = openConnection(
-            url = API_BASE + REFRESH_PATH,
+            url = resolveApiRoot(apiBaseUrl) + REFRESH_PATH,
             method = "POST",
             accessToken = authHeader
         )

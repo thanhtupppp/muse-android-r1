@@ -187,8 +187,55 @@ class LocalProvisionServer(
             val rawBody = content["postData"] ?: return badRequest("MISSING_BODY")
             val payload = JSONObject(rawBody)
 
+            val mode = payload.optString("mode").trim().lowercase()
             val museToken = payload.optString("muse_token").trim()
+            val vmId = payload.optString("vm_id").trim()
+            val deviceToken = payload.optString("device_token")
+                .ifBlank { payload.optString("token") }
+                .trim()
+            val serverHost = payload.optString("server_host")
+                .ifBlank { payload.optString("noise_host") }
+                .ifBlank { payload.optString("server") }
+                .trim()
             val mqttHost = payload.optString("mqtt_host").trim()
+            val deviceId = MusePreferences.getDeviceId(context)
+
+            if (mqttHost.isNotEmpty()) {
+                MusePreferences.saveAgentConfig(context, mqttHost, deviceId)
+            }
+
+            val isDirect = mode == "direct" || (museToken.isEmpty() && (vmId.isNotEmpty() || deviceToken.isNotEmpty()))
+            if (isDirect) {
+                if (vmId.isEmpty()) {
+                    return badRequest("EMPTY_VM_ID: VM ID không được để trống")
+                }
+                if (deviceToken.isEmpty()) {
+                    return badRequest("EMPTY_DEVICE_TOKEN: Device Token không được để trống")
+                }
+
+                val effectiveHost = MusePreferences.normalizeHost(serverHost)
+                    .ifEmpty { MusePreferences.DEFAULT_NOISE_HOST }
+                MusePreferences.saveDirectConfig(
+                    context = context,
+                    noiseHost = effectiveHost,
+                    vmId = vmId,
+                    deviceToken = deviceToken
+                )
+                AgentService.reloadMuseSession(context)
+
+                Log.i(TAG, "Direct Muse VM configured: host=$effectiveHost vm_id=$vmId device=$deviceId")
+
+                return json(
+                    response = JSONObject()
+                        .put("ok", true)
+                        .put("mode", "direct")
+                        .put("noise_host", MusePreferences.getNoiseHost(context))
+                        .put("vm_id", vmId)
+                        .put("device_id", deviceId)
+                        .put("muse_paired", true)
+                        .put("message", "Direct Muse VM configured ($effectiveHost / $vmId)")
+                )
+            }
 
             if (museToken.isEmpty()) {
                 return badRequest("EMPTY_MUSE_TOKEN")
@@ -198,7 +245,6 @@ class LocalProvisionServer(
                 return badRequest("INVALID_TOKEN_PREFIX: Muse token phải bắt đầu bằng 'mgst_'")
             }
 
-            val deviceId = MusePreferences.getDeviceId(context)
             val gadgetClient = MuseGadgetClient(context, deviceId)
             val saved = gadgetClient.setToken(museToken)
 
@@ -206,18 +252,14 @@ class LocalProvisionServer(
                 return badRequest("FAILED_TO_SAVE_TOKEN")
             }
 
-            if (mqttHost.isNotEmpty()) {
-                MusePreferences.saveAgentConfig(context, mqttHost, deviceId)
-            }
-
-            // Kích hoạt lại AgentService để nạp token và kết nối Muse VM
-            AgentService.start(context)
+            AgentService.reloadMuseSession(context)
 
             Log.i(TAG, "Muse token configured successfully for device $deviceId")
 
             json(
                 response = JSONObject()
                     .put("ok", true)
+                    .put("mode", "sdk_token")
                     .put("message", "Muse token configured successfully")
                     .put("device_id", deviceId)
                     .put("muse_paired", true)
@@ -259,6 +301,15 @@ class LocalProvisionServer(
     }
 
     private fun statusResponse(): JSONObject {
+        val btAdapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+        val btInfo = JSONObject()
+            .put("enabled", btAdapter?.isEnabled ?: false)
+            .put("name", btAdapter?.name ?: "")
+            .put("address", btAdapter?.address ?: "")
+            .put("scan_mode", btAdapter?.scanMode ?: -1)
+            .put("multi_adv", btAdapter?.isMultipleAdvertisementSupported ?: false)
+            .put("le_advertiser", btAdapter?.bluetoothLeAdvertiser != null)
+
         return JSONObject()
             .put("ok", true)
             .put("agent_version", BuildConfig.VERSION_NAME)
@@ -266,7 +317,14 @@ class LocalProvisionServer(
             .put("device_id", MusePreferences.getDeviceId(context))
             .put("network", NetworkStateObserver.currentSummary(context))
             .put("muse_paired", MusePreferences.isMusePaired(context))
+            .put("muse_mode", MusePreferences.getMusePairingMode(context))
+            .put("muse_connected", AgentService.isMuseConnected)
+            .put("muse_error", AgentService.lastMuseError)
+            .put("noise_host", MusePreferences.getNoiseHost(context))
+            .put("vm_id", MusePreferences.getDirectVmId(context))
             .put("has_muse_token", MusePreferences.getMuseToken(context).isNotEmpty())
+            .put("has_direct_token", MusePreferences.hasDirectConfig(context))
+            .put("bluetooth", btInfo)
     }
 
     private fun json(response: JSONObject): Response {
@@ -314,6 +372,6 @@ class LocalProvisionServer(
         private const val TAG = "MuseR1"
         const val DEFAULT_PORT = 8080
         private const val SOCKET_READ_TIMEOUT = 5_000
-        private const val MAX_CONTENT_LENGTH_BYTES = 4096L
+        private const val MAX_CONTENT_LENGTH_BYTES = 16384L
     }
 }

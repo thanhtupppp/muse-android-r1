@@ -10,35 +10,52 @@ import org.json.JSONObject
  */
 object MuseLinkProtocol {
 
-    const val TYPE_REGISTER = "link.register"
-    const val TYPE_COMMAND = "command"
-    const val TYPE_RESULT = "result"
-    const val TYPE_EVENT = "event"
+    const val TYPE_REQ = "req"
+    const val METHOD_REGISTER = "link.register"
+    const val METHOD_INVOKE = "link.invoke"
+    const val METHOD_RESULT = "link.result"
 
-    fun buildRegisterMessage(deviceId: String, agentVersion: String): String {
-        return JSONObject()
-            .put("type", TYPE_REGISTER)
-            .put("device_id", deviceId)
-            .put("agent_version", agentVersion)
+    fun buildRegisterMessage(
+        requestId: String,
+        nodeId: String,
+        displayName: String,
+        agentVersion: String,
+        commandsV2: JSONObject,
+        networkSsid: String = ""
+    ): String {
+        val params = JSONObject()
+            .put("node_id", nodeId.lowercase())
+            .put("display_name", displayName)
             .put("platform", "android")
-            .put("capabilities", arrayOf("tts", "audio", "volume", "wifi_status"))
+            .put("version", agentVersion)
+            .put("device_family", "speaker")
+            .put("model_id", "phicomm-r1")
+            .put("is_wakeup_supported", false)
+            .put("commands_v2", commandsV2)
+
+        if (networkSsid.isNotBlank()) {
+            params.put("metadata", JSONObject().put("network_ssid", networkSsid))
+        }
+
+        return JSONObject()
+            .put("type", TYPE_REQ)
+            .put("id", requestId)
+            .put("method", METHOD_REGISTER)
+            .put("params", params)
             .toString()
     }
 
-    fun buildResult(requestId: String, ok: Boolean, result: JSONObject): String {
-        return JSONObject()
-            .put("type", TYPE_RESULT)
-            .put("request_id", requestId)
-            .put("ok", ok)
-            .put("result", result)
-            .toString()
-    }
-
-    fun buildEvent(name: String, payload: JSONObject): String {
-        return JSONObject()
-            .put("type", TYPE_EVENT)
-            .put("name", name)
-            .put("payload", payload)
-            .toString()
+    fun buildInvokeResult(requestId: String, outcome: JSONObject): String {
+        val out = JSONObject()
+            .put("method", METHOD_RESULT)
+            .put("id", requestId)
+            .put("ok", outcome.optBoolean("ok", false))
+        if (outcome.has("payload")) {
+            out.put("payload", outcome.opt("payload"))
+        }
+        if (outcome.has("error")) {
+            out.put("error", outcome.optString("error"))
+        }
+        return out.toString()
     }
 }

@@ -155,38 +155,82 @@ class R1ApiClient(private val context: Context? = null) {
         token: String? = null
     ): Result<JSONObject> = withContext(Dispatchers.IO) {
         runCatching {
-            val cleanIp = speakerIp.trim()
-            require(isValidIpv4(cleanIp)) { "Địa chỉ IP không hợp lệ: $speakerIp" }
             val cleanToken = museToken.trim()
             require(cleanToken.isNotEmpty()) { "Muse Token không được để trống" }
             require(cleanToken.startsWith("mgst_")) { "Muse Token phải bắt đầu bằng 'mgst_'" }
 
             val payload = JSONObject().apply {
+                put("mode", "sdk_token")
                 put("muse_token", cleanToken)
                 if (!mqttHost.isNullOrBlank()) {
                     put("mqtt_host", mqttHost.trim())
                 }
-            }.toString()
-
-            val reqBuilder = Request.Builder()
-                .url("http://$cleanIp:8080/configure-muse")
-                .post(payload.toRequestBody("application/json".toMediaType()))
-            if (!token.isNullOrEmpty()) {
-                reqBuilder.addHeader("x-muse-token", token)
             }
+            postConfigureMuse(speakerIp, payload, token, "Muse Token")
+        }
+    }
 
-            getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
-                val rawBody = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    val sample = rawBody.take(500)
-                    throw IOException("R1 từ chối cấu hình Muse Token: HTTP ${response.code} ${response.message}; body=$sample")
+    suspend fun configureMuseDirect(
+        speakerIp: String,
+        serverHost: String,
+        vmId: String,
+        deviceToken: String,
+        mqttHost: String? = null,
+        token: String? = null
+    ): Result<JSONObject> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanHost = serverHost.trim()
+                .removePrefix("wss://")
+                .removePrefix("ws://")
+                .removePrefix("https://")
+                .removePrefix("http://")
+                .substringBefore('/')
+                .ifEmpty { "hatch.metaaivm.com" }
+            val cleanVmId = vmId.trim()
+            val cleanDeviceToken = deviceToken.trim()
+            require(cleanVmId.isNotEmpty()) { "VM ID không được để trống" }
+            require(cleanDeviceToken.isNotEmpty()) { "Device Token không được để trống" }
+
+            val payload = JSONObject().apply {
+                put("mode", "direct")
+                put("server_host", cleanHost)
+                put("vm_id", cleanVmId)
+                put("device_token", cleanDeviceToken)
+                if (!mqttHost.isNullOrBlank()) {
+                    put("mqtt_host", mqttHost.trim())
                 }
-                val json = JSONObject(rawBody)
-                if (!json.optBoolean("ok", false)) {
-                    throw IOException("R1 báo lỗi: ${json.optString("error", rawBody)}")
-                }
-                json
             }
+            postConfigureMuse(speakerIp, payload, token, "Direct Muse VM")
+        }
+    }
+
+    private fun postConfigureMuse(
+        speakerIp: String,
+        payload: JSONObject,
+        token: String?,
+        label: String
+    ): JSONObject {
+        val cleanIp = speakerIp.trim()
+        require(isValidIpv4(cleanIp)) { "Địa chỉ IP không hợp lệ: $speakerIp" }
+
+        val reqBuilder = Request.Builder()
+            .url("http://$cleanIp:8080/configure-muse")
+            .post(payload.toString().toRequestBody("application/json".toMediaType()))
+        if (!token.isNullOrEmpty()) {
+            reqBuilder.addHeader("x-muse-token", token)
+        }
+
+        getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
+            val rawBody = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                val sample = rawBody.take(500)
+                throw IOException("R1 từ chối cấu hình $label: HTTP ${response.code} ${response.message}; body=$sample")
+            }
+            val json = JSONObject(rawBody)
+            if (!json.optBoolean("ok", false)) {
+                throw IOException("R1 báo lỗi: ${json.optString("error", rawBody)}")
+            }
+            return json
         }
     }
 

@@ -120,13 +120,26 @@ fun AddR1Screen(
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
-                        if (viewModel.isMusePaired) {
+                        if (viewModel.isMuseConnected) {
+                            Surface(
+                                color = Color(0xFF1B5E20),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text(
+                                    text = "ĐÃ KẾT NỐI CLOUD ✔",
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        } else if (viewModel.isMusePaired) {
                             Surface(
                                 color = Color(0xFF2B8A3E),
                                 shape = RoundedCornerShape(12.dp)
                             ) {
                                 Text(
-                                    text = "ĐÃ GHÉP ĐÔI ✔",
+                                    text = "ĐÃ CẤU HÌNH ✔",
                                     color = Color.White,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
@@ -136,15 +149,58 @@ fun AddR1Screen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (viewModel.useDirectVmConfig) {
+                            Button(
+                                onClick = { viewModel.setDirectMode(true) },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
+                            ) {
+                                Text("Cách B: Direct VM", fontSize = 12.sp)
+                            }
+                            OutlinedButton(
+                                onClick = { viewModel.setDirectMode(false) },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
+                            ) {
+                                Text("SDK Token (mgst_)", fontSize = 12.sp)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = { viewModel.setDirectMode(true) },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
+                            ) {
+                                Text("Cách B: Direct VM", fontSize = 12.sp)
+                            }
+                            Button(
+                                onClick = { viewModel.setDirectMode(false) },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
+                            ) {
+                                Text("SDK Token (mgst_)", fontSize = 12.sp)
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     Text(
-                        text = "Nhập Muse SDK Token (mgst_...) để kết nối loa với máy chủ trợ lý Muse AI.",
+                        text = if (viewModel.useDirectVmConfig) {
+                            "Cấu hình giống ESP32: nhập Server, VM ID và Device Token để R1 kết nối thẳng Noise XX tới máy chủ Muse."
+                        } else {
+                            "Nhập Muse SDK Token (mgst_...) để kết nối loa với máy chủ trợ lý Muse AI."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     OutlinedTextField(
                         value = speakerIp,
@@ -160,46 +216,129 @@ fun AddR1Screen(
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    OutlinedTextField(
-                        value = viewModel.museTokenInput,
-                        onValueChange = { viewModel.setMuseTokenInput(it) },
-                        label = { Text("Muse SDK Token (mgst_...)") },
-                        placeholder = { Text("mgst_xxxxxx...") },
-                        singleLine = true,
-                        trailingIcon = {
-                            TextButton(onClick = {
-                                val clip = clipboardManager.getText()?.text?.trim().orEmpty()
-                                if (clip.isNotEmpty()) {
-                                    viewModel.setMuseTokenInput(clip)
-                                    Toast.makeText(context, "Đã dán token từ clipboard!", Toast.LENGTH_SHORT).show()
+                    if (viewModel.useDirectVmConfig) {
+                        OutlinedTextField(
+                            value = viewModel.currentNoiseHost,
+                            onValueChange = { viewModel.setNoiseHost(it) },
+                            label = { Text("Muse Server Host") },
+                            placeholder = { Text("hatch.metaaivm.com") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        OutlinedTextField(
+                            value = viewModel.currentVmId,
+                            onValueChange = { viewModel.setVmId(it) },
+                            label = { Text("VM ID") },
+                            placeholder = { Text("vm-xxxxxxxx...") },
+                            singleLine = true,
+                            trailingIcon = {
+                                TextButton(onClick = {
+                                    val clip = clipboardManager.getText()?.text?.trim().orEmpty()
+                                    if (clip.isNotEmpty()) {
+                                        viewModel.setVmId(clip)
+                                        Toast.makeText(context, "Đã dán VM ID!", Toast.LENGTH_SHORT).show()
+                                    }
+                                }) {
+                                    Text("Dán 📋", fontSize = 12.sp)
                                 }
-                            }) {
-                                Text("Dán 📋", fontSize = 12.sp)
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        OutlinedTextField(
+                            value = viewModel.currentDeviceToken,
+                            onValueChange = { viewModel.setDeviceToken(it) },
+                            label = { Text("Device Token") },
+                            placeholder = { Text("Nhập device token từ Muse...") },
+                            singleLine = true,
+                            trailingIcon = {
+                                TextButton(onClick = {
+                                    val clip = clipboardManager.getText()?.text?.trim().orEmpty()
+                                    if (clip.isNotEmpty()) {
+                                        viewModel.setDeviceToken(clip)
+                                        Toast.makeText(context, "Đã dán Device Token!", Toast.LENGTH_SHORT).show()
+                                    }
+                                }) {
+                                    Text("Dán 📋", fontSize = 12.sp)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Button(
+                            onClick = {
+                                viewModel.setSpeakerIp(speakerIp.trim())
+                                viewModel.configureMuseDirect(
+                                    ip = speakerIp.trim(),
+                                    serverHost = viewModel.currentNoiseHost,
+                                    vmId = viewModel.currentVmId,
+                                    deviceToken = viewModel.currentDeviceToken
+                                )
+                            },
+                            enabled = !viewModel.isPairingMuse,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (viewModel.isPairingMuse) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Đang lưu cấu hình Direct VM...")
+                            } else {
+                                Text("Lưu & Kết nối Direct VM 🚀")
                             }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                        }
+                    } else {
+                        OutlinedTextField(
+                            value = viewModel.museTokenInput,
+                            onValueChange = { viewModel.setMuseTokenInput(it) },
+                            label = { Text("Muse SDK Token (mgst_...)") },
+                            placeholder = { Text("mgst_xxxxxx...") },
+                            singleLine = true,
+                            trailingIcon = {
+                                TextButton(onClick = {
+                                    val clip = clipboardManager.getText()?.text?.trim().orEmpty()
+                                    if (clip.isNotEmpty()) {
+                                        viewModel.setMuseTokenInput(clip)
+                                        Toast.makeText(context, "Đã dán token từ clipboard!", Toast.LENGTH_SHORT).show()
+                                    }
+                                }) {
+                                    Text("Dán 📋", fontSize = 12.sp)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
 
-                    Button(
-                        onClick = {
-                            viewModel.setSpeakerIp(speakerIp.trim())
-                            viewModel.configureMuseToken(speakerIp.trim(), viewModel.museTokenInput)
-                        },
-                        enabled = !viewModel.isPairingMuse,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (viewModel.isPairingMuse) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.onPrimary
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Đang gửi token tới R1...")
-                        } else {
-                            Text(if (viewModel.isMusePaired) "Cập nhật Token Muse AI" else "Ghép đôi với Muse AI 🚀")
+                        Button(
+                            onClick = {
+                                viewModel.setSpeakerIp(speakerIp.trim())
+                                viewModel.configureMuseToken(speakerIp.trim(), viewModel.museTokenInput)
+                            },
+                            enabled = !viewModel.isPairingMuse,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (viewModel.isPairingMuse) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Đang gửi token tới R1...")
+                            } else {
+                                Text(if (viewModel.isMusePaired) "Cập nhật Token Muse AI" else "Ghép đôi với Muse AI 🚀")
+                            }
                         }
                     }
 

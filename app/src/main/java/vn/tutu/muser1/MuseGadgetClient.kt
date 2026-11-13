@@ -47,7 +47,7 @@ class MuseGadgetClient(
     }
 
     fun isPaired(): Boolean {
-        return hasToken()
+        return MusePreferences.isMusePaired(context)
     }
 
     fun buildStatusPayload(): String {
