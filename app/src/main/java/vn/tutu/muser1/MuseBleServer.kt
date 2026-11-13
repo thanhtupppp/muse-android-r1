@@ -23,6 +23,8 @@ import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 /**
@@ -76,6 +78,22 @@ class MuseBleServer(
     @Volatile
     private var notifyLatch: CountDownLatch? = null
 
+    /** Tên adapter trước khi bị đổi thành tên MuseGadget, để khôi phục khi stop(). */
+    @Volatile
+    private var previousAdapterName: String? = null
+
+    @Volatile
+    private var ourBleName: String? = null
+
+    /** Payload TX gần nhất, để central đọc lại TX characteristic (chuẩn gốc READ | NOTIFY). */
+    @Volatile
+    private var lastTxPayload: ByteArray = ByteArray(0)
+
+    private var advScheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
+
+    @Volatile
+    private var advPolicyFuture: ScheduledFuture<*>? = null
+
     private val rxAssembler = MuseBleFramer.RxAssembler()
     private var pairingProtocol: MuseBlePairingProtocol? = null
     private var bleRxExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -112,6 +130,19 @@ class MuseBleServer(
             Log.i(TAG, "Thiết bị BLE ${device.address} đổi trạng thái: $stateName (status=$status)")
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
+                    // Giao thức pairing là một phiên duy nhất: từ chối central
+                    // thứ hai để nó không ghi đè MTU / notification / phiên
+                    // pair của central đang được phục vụ.
+                    val current = connectedDevice
+                    if (current != null && current.address != device.address) {
+                        Log.w(TAG, "Từ chối central thứ hai ${device.address}: đang phục vụ ${current.address}")
+                        try {
+                            gattServer?.cancelConnection(device)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Lỗi huỷ kết nối central thừa", e)
+                        }
+                        return
+                    }
                     connectedDevice = device
                     clientMtu = MuseBleFramer.DEFAULT_ATT_MTU
                     notificationsEnabled = false
@@ -131,10 +162,10 @@ class MuseBleServer(
         }
 
         override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
-            if (connectedDevice == null || connectedDevice?.address == device.address) {
+            if (connectedDevice?.address == device.address) {
                 clientMtu = mtu.coerceAtLeast(MuseBleFramer.DEFAULT_ATT_MTU)
+                Log.i(TAG, "BLE MTU cho ${device.address} = $mtu (hiệu lực $clientMtu)")
             }
-            Log.i(TAG, "BLE MTU cho ${device.address} = $mtu (hiệu lực $clientMtu)")
         }
 
         override fun onCharacteristicReadRequest(
@@ -143,7 +174,22 @@ class MuseBleServer(
             offset: Int,
             characteristic: BluetoothGattCharacteristic
         ) {
-            gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, ByteArray(0))
+            if (connectedDevice?.address != device.address) {
+                gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
+                return
+            }
+            // TX ở bản gốc là READ | NOTIFY và read trả payload gần nhất.
+            val payload = if (characteristic.uuid.toString().equals(TX_UUID, ignoreCase = true)) {
+                lastTxPayload
+            } else {
+                ByteArray(0)
+            }
+            val value = when {
+                offset <= 0 -> payload
+                offset < payload.size -> payload.copyOfRange(offset, payload.size)
+                else -> ByteArray(0)
+            }
+            gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
         }
 
         override fun onCharacteristicWriteRequest(
@@ -155,6 +201,14 @@ class MuseBleServer(
             offset: Int,
             value: ByteArray?
         ) {
+            // Chỉ central đang được phục vụ mới được ghi vào RX / lái phiên pair.
+            if (connectedDevice?.address != device.address) {
+                if (responseNeeded) {
+                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
+                }
+                Log.w(TAG, "Bỏ qua write từ thiết bị không phải central hiện tại: ${device.address}")
+                return
+            }
             if (responseNeeded) {
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
             }
@@ -188,6 +242,10 @@ class MuseBleServer(
             offset: Int,
             descriptor: BluetoothGattDescriptor
         ) {
+            if (connectedDevice?.address != device.address) {
+                gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
+                return
+            }
             val valBytes = if (notificationsEnabled) {
                 BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
             } else {
@@ -205,6 +263,12 @@ class MuseBleServer(
             offset: Int,
             value: ByteArray?
         ) {
+            if (connectedDevice?.address != device.address) {
+                if (responseNeeded) {
+                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
+                }
+                return
+            }
             if (responseNeeded) {
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
             }
@@ -215,6 +279,7 @@ class MuseBleServer(
         }
 
         override fun onNotificationSent(device: BluetoothDevice, status: Int) {
+            if (connectedDevice?.address != device.address) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.w(TAG, "BLE onNotificationSent status=$status cho ${device.address}")
             }
@@ -336,7 +401,16 @@ class MuseBleServer(
         rxAssembler.reset()
 
         try {
-            if (adapter.name != identity.bleName) {
+            // Tên adapter là tài nguyên dùng chung với Bluetooth Classic/SPP:
+            // lưu tên gốc để stop() khôi phục, nếu không loa sẽ mang tên
+            // MuseGadget-... vĩnh viễn và các luồng tìm loa theo tên cũ
+            // (ví dụ SPP) không còn thấy nó nữa.
+            ourBleName = identity.bleName
+            val currentName = adapter.name
+            if (currentName != identity.bleName) {
+                if (previousAdapterName == null) {
+                    previousAdapterName = currentName
+                }
                 adapter.name = identity.bleName
                 Log.i(TAG, "Đã cập nhật tên Bluetooth thiết bị thành: ${identity.bleName}")
             }
@@ -375,7 +449,9 @@ class MuseBleServer(
 
         val txChar = BluetoothGattCharacteristic(
             UUID.fromString(TX_UUID),
-            BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+            // Bản gốc là READ | NOTIFY; trước đây thiếu PROPERTY_READ nên
+            // central đọc TX luôn thất bại dù đã khai PERMISSION_READ.
+            BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_READ,
             BluetoothGattCharacteristic.PERMISSION_READ
         )
 
@@ -415,44 +491,110 @@ class MuseBleServer(
         }
         Log.i(TAG, "Đã tạo Meta Muse GATT Server với Service $SERVICE_UUID")
 
-        // 3. Khởi động BLE Advertising
+        // 3. Khởi động BLE Advertising trong cửa sổ pairing, rồi áp chính
+        // sách ở scheduleAdvertisingPolicy(): phát nhanh chỉ có ý nghĩa khi
+        // đang chờ pair, phát LOW_LATENCY + HIGH mãi sẽ tranh radio với
+        // Wi-Fi (R1 dùng chung radio) và tốn điện vô ích sau khi đã pair.
         try {
-            try {
-                leAdvertiser.stopAdvertising(advertiseCallback)
-            } catch (_: Exception) {}
-
-            val settings = AdvertiseSettings.Builder()
-                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
-                .setConnectable(true)
-                .setTimeout(0)
-                .build()
-
-            val serviceParcelUuid = ParcelUuid(UUID.fromString(SERVICE_UUID))
-
-            // Meta Muse Gadget advertisement flags (ID: 0xFFFF):
-            // Chỉ đặt Bit 0 (0x01 = FLAG_PAIRING_MODE):
-            // Nếu đặt Bit 1 (0x02 = LINK_FLAG_BLUETOOTH_GADGET), HatchDeviceBleManager.onScanResult
-            // sẽ loại bỏ thiết bị khi ở chế độ Wi-Fi link (includeBluetoothGadgets == false).
-            // Với 0x01, advertisesBluetoothGadget = false nhưng hatchAdvertisedPairingFlag = true
-            // và matchesDeviceName("MuseGadget-...") = true nên app Meta Muse luôn hiển thị loa.
-            val flags = FLAG_PAIRING_MODE.toByte()
-
-            val advertiseData = AdvertiseData.Builder()
-                .addServiceUuid(serviceParcelUuid)
-                .addManufacturerData(PAIRED_FLAG_COMPANY_ID, byteArrayOf(flags))
-                .build()
-
-            val scanResponse = AdvertiseData.Builder()
-                .setIncludeDeviceName(true)
-                .build()
-
-            leAdvertiser.startAdvertising(settings, advertiseData, scanResponse, advertiseCallback)
-            Log.i(TAG, "Bắt đầu phát sóng Meta Muse BLE Advertising...")
+            startAdvertisingInternal(
+                leAdvertiser,
+                AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY,
+                AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
+            )
+            scheduleAdvertisingPolicy(generation)
         } catch (e: Exception) {
             lastStartError = "ADVERTISE_EXCEPTION:${e.javaClass.simpleName}"
             Log.e(TAG, "Lỗi khởi động BLE Advertising", e)
             closeGattServer()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startAdvertisingInternal(leAdvertiser: BluetoothLeAdvertiser, mode: Int, txPower: Int) {
+        try {
+            leAdvertiser.stopAdvertising(advertiseCallback)
+        } catch (_: Exception) {}
+
+        val settings = AdvertiseSettings.Builder()
+            .setAdvertiseMode(mode)
+            .setTxPowerLevel(txPower)
+            .setConnectable(true)
+            .setTimeout(0)
+            .build()
+
+        val serviceParcelUuid = ParcelUuid(UUID.fromString(SERVICE_UUID))
+
+        // Meta Muse Gadget advertisement flags (ID: 0xFFFF):
+        // Chỉ đặt Bit 0 (0x01 = FLAG_PAIRING_MODE):
+        // Nếu đặt Bit 1 (0x02 = LINK_FLAG_BLUETOOTH_GADGET), HatchDeviceBleManager.onScanResult
+        // sẽ loại bỏ thiết bị khi ở chế độ Wi-Fi link (includeBluetoothGadgets == false).
+        // Với 0x01, advertisesBluetoothGadget = false nhưng hatchAdvertisedPairingFlag = true
+        // và matchesDeviceName("MuseGadget-...") = true nên app Meta Muse luôn hiển thị loa.
+        val flags = FLAG_PAIRING_MODE.toByte()
+
+        val advertiseData = AdvertiseData.Builder()
+            .addServiceUuid(serviceParcelUuid)
+            .addManufacturerData(PAIRED_FLAG_COMPANY_ID, byteArrayOf(flags))
+            .build()
+
+        val scanResponse = AdvertiseData.Builder()
+            .setIncludeDeviceName(true)
+            .build()
+
+        leAdvertiser.startAdvertising(settings, advertiseData, scanResponse, advertiseCallback)
+        Log.i(TAG, "Bắt đầu phát sóng Meta Muse BLE Advertising (mode=$mode, txPower=$txPower)...")
+    }
+
+    private fun ensureAdvScheduler(): ScheduledExecutorService {
+        if (advScheduler.isShutdown) {
+            advScheduler = Executors.newSingleThreadScheduledExecutor()
+        }
+        return advScheduler
+    }
+
+    /** Hẹn giờ áp chính sách advertising sau cửa sổ pairing. */
+    private fun scheduleAdvertisingPolicy(generation: Int) {
+        advPolicyFuture?.cancel(false)
+        advPolicyFuture = ensureAdvScheduler().schedule({
+            applyAdvertisingPolicy(generation)
+        }, PAIRING_WINDOW_MS, TimeUnit.MILLISECONDS)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun applyAdvertisingPolicy(generation: Int) {
+        if (generation != startGeneration || !isAdvertising) return
+        if (connectedDevice != null) {
+            // Đang có central dùng dở phiên pair: hoãn quyết định.
+            advPolicyFuture = ensureAdvScheduler().schedule({
+                applyAdvertisingPolicy(generation)
+            }, POLICY_RECHECK_MS, TimeUnit.MILLISECONDS)
+            return
+        }
+        val adv = advertiser ?: return
+        val paired = try {
+            MusePreferences.isMusePaired(context)
+        } catch (e: Exception) {
+            Log.w(TAG, "Không đọc được trạng thái Muse paired", e)
+            false
+        }
+        try {
+            adv.stopAdvertising(advertiseCallback)
+        } catch (e: Exception) {
+            Log.w(TAG, "Lỗi dừng advertising khi áp chính sách", e)
+        }
+        isAdvertising = false
+        if (paired) {
+            // Giống bản ESP32 gốc: setup xong thì tắt advertising setup.
+            // GATT server vẫn mở; muốn pair lại thì khởi động lại Agent
+            // (hoặc gọi start()) để mở cửa sổ pairing mới.
+            Log.i(TAG, "Hết cửa sổ pairing và thiết bị đã pair: dừng BLE advertising")
+        } else {
+            Log.i(TAG, "Hết cửa sổ pairing, thiết bị chưa pair: hạ advertising xuống LOW_POWER")
+            startAdvertisingInternal(
+                adv,
+                AdvertiseSettings.ADVERTISE_MODE_LOW_POWER,
+                AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM
+            )
         }
     }
 
@@ -475,6 +617,8 @@ class MuseBleServer(
         startGeneration++
         isStarting = false
         serviceAddedLatch?.countDown()
+        advPolicyFuture?.cancel(false)
+        advPolicyFuture = null
 
         try {
             if (isAdvertising) {
@@ -485,6 +629,21 @@ class MuseBleServer(
         } catch (e: Exception) {
             Log.w(TAG, "Lỗi dừng BLE Advertising", e)
         }
+
+        // Khôi phục tên adapter gốc để các luồng Classic/SPP tìm loa theo
+        // tên cũ hoạt động lại như trước khi BLE đổi tên.
+        try {
+            val prev = previousAdapterName
+            val ours = ourBleName
+            if (prev != null && ours != null && bluetoothAdapter?.name == ours) {
+                bluetoothAdapter?.name = prev
+                Log.i(TAG, "Đã khôi phục tên Bluetooth adapter: $prev")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Lỗi khôi phục tên Bluetooth adapter", e)
+        }
+        previousAdapterName = null
+        ourBleName = null
 
         try {
             notifyLatch?.countDown()
@@ -507,6 +666,7 @@ class MuseBleServer(
     @SuppressLint("MissingPermission")
     private fun enqueueNotification(targetDevice: BluetoothDevice, responseJson: String) {
         val payload = responseJson.toByteArray(Charsets.UTF_8)
+        lastTxPayload = payload
         if (payload.size > MuseBleFramer.MAX_MESSAGE_BYTES) {
             Log.e(TAG, "BLE TX payload quá lớn (${payload.size} bytes), bỏ qua")
             return
@@ -642,6 +802,10 @@ class MuseBleServer(
         private const val BLUETOOTH_ENABLE_TIMEOUT_MS = 15_000L
         private const val BLUETOOTH_POLL_INTERVAL_MS = 250L
         private const val SERVICE_ADD_TIMEOUT_MS = 3_000L
+
+        /** Cửa sổ pairing phát nhanh, cùng cỡ cửa sổ pair của SDK gốc. */
+        private const val PAIRING_WINDOW_MS = 10 * 60_000L
+        private const val POLICY_RECHECK_MS = 60_000L
 
         // Chuẩn Meta Muse Gadget
         const val SERVICE_UUID = "7fdd3d1c-38ea-46cf-8b46-314ecf5f240c"

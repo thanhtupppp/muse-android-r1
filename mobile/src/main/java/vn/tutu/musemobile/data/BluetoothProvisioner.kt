@@ -22,6 +22,10 @@ class BluetoothProvisioner(private val context: Context) {
     companion object {
         private val MUSE_R1_SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
         private const val DEVICE_NAME_PREFIX = "Phicomm_R1_"
+        private const val STOCK_NAME_PREFIX = "Phicomm R1"
+
+        /** Tên adapter sau khi Agent BLE chạy và đổi tên theo chuẩn Muse Gadget. */
+        private const val BLE_NAME_PREFIX = "MuseGadget-"
         private const val MAX_RESPONSE_BYTES = 1024
         private const val CONNECT_TIMEOUT_MS = 15_000L
         private const val RESPONSE_TIMEOUT_MS = 45_000L
@@ -52,8 +56,28 @@ class BluetoothProvisioner(private val context: Context) {
         bluetoothAdapter?.cancelDiscovery()
     }
 
-    fun isR1Device(device: BluetoothDevice): Boolean =
-        device.name?.startsWith(DEVICE_NAME_PREFIX, ignoreCase = true) == true
+    @SuppressLint("MissingPermission")
+    fun isR1Device(device: BluetoothDevice): Boolean {
+        val name = device.name
+        if (name != null && (
+                name.startsWith(DEVICE_NAME_PREFIX, ignoreCase = true) ||
+                    name.startsWith(STOCK_NAME_PREFIX, ignoreCase = true) ||
+                    // Sau khi Agent khởi động, BLE server đổi tên adapter toàn
+                    // cục thành MuseGadget-... (dùng chung cho Classic và BLE),
+                    // nên loa vẫn là R1 dù không còn mang tên Phicomm nữa.
+                    name.startsWith(BLE_NAME_PREFIX, ignoreCase = true)
+                )
+        ) {
+            return true
+        }
+        // Dự phòng khi tên đã đổi/không đọc được: thiết bị có quảng bá
+        // service SPP mà Agent dùng để provisioning thì coi là R1.
+        return try {
+            device.uuids?.any { it.uuid == MUSE_R1_SPP_UUID } == true
+        } catch (e: Exception) {
+            false
+        }
+    }
 
     @SuppressLint("MissingPermission")
     fun getBondedR1Devices(): List<BluetoothDevice> {
