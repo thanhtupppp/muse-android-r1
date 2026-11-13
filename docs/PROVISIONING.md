@@ -57,6 +57,15 @@ Log và thông báo lỗi hai phía đều đi qua `SecretRedactor` (che passwor
 
 Cả bốn endpoint dùng cùng quy tắc xác thực `x-muse-token` như `/status`.
 
+## Điều khiển vòng LED (HTTP :8080)
+
+Học theo API LED của DomeeBox (server LAN :8081 của họ) nhưng giữ luật xác thực token của mình và trung thực về phần cứng — chặng cuối xuống đèn trên ROM R1 chưa được biết trước, nên Agent **dò đường trước**:
+
+- Khi Agent khởi động, `LedControl.probe()` chạy nền một lần: liệt kê `/sys/class/leds/*` (tên node, các file, `max_brightness`, file `brightness` có ghi được từ uid của app không) và các service hệ thống có tên gợi ý LED/vendor (qua `ServiceManager.listServices()`). Kết quả ở `GET /status` → `led_probe` (`available`, `strategy`: `rgb_triple` / `single_brightness` / `color_file` / `none`, `channels`, `nodes`, `vendor_services`) và được lưu trong preferences.
+- `GET /led` — trạng thái LED hiện tại + toàn bộ kết quả probe.
+- `POST /led` `{color?: "#RRGGBB", brightness?: 0..100, off?: true}` — chỉ điều khiển thật (ghi sysfs `brightness` theo kênh) khi `led_probe.available = true`, tức có đủ node kênh ghi được. Chưa có đường thì trả lỗi `LED_UNAVAILABLE`; ghi thất bại trả `LED_WRITE_FAILED:<node>`; màu sai định dạng trả `INVALID_COLOR`. Node chỉ có file `color` (không có `brightness`) mới được tính là bằng chứng (`strategy: color_file`, vẫn `available: false`) vì định dạng ghi của file đó khác nhau theo vendor.
+- Mobile: thẻ "Đèn LED vòng" ở tab Home (preset màu + slider độ sáng + nút tắt) chỉ hiện khi `led_probe.available = true`.
+
 ## Bảo mật và vận hành
 
 - Không ghi mật khẩu Wi-Fi hoặc Muse token vào log (SSID chỉ ghi ở mức debug cần thiết).

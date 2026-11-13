@@ -294,11 +294,14 @@ class R1ApiClient(private val context: Context? = null) {
     }
 
     /** POST JSON {ssid} tới một endpoint :8080 của loa. */
-    private fun postSsid(speakerIp: String, path: String, ssid: String, token: String?, label: String): JSONObject {
+    private fun postSsid(speakerIp: String, path: String, ssid: String, token: String?, label: String): JSONObject =
+        postJson(speakerIp, path, JSONObject().put("ssid", ssid), token, label)
+
+    /** POST một thân JSON bất kỳ tới endpoint :8080 của loa. */
+    private fun postJson(speakerIp: String, path: String, payload: JSONObject, token: String?, label: String): JSONObject {
         val cleanIp = speakerIp.trim()
         require(isValidIpv4(cleanIp)) { "Địa chỉ IP không hợp lệ: $speakerIp" }
 
-        val payload = JSONObject().put("ssid", ssid)
         val reqBuilder = Request.Builder()
             .url("http://$cleanIp:8080$path")
             .post(payload.toString().toRequestBody("application/json".toMediaType()))
@@ -421,4 +424,26 @@ class R1ApiClient(private val context: Context? = null) {
             .put("text", text)
         return executeCommand(speakerIp, command, token)
     }
+
+    /**
+     * Đặt vòng LED trên loa (POST /led). Chỉ gọi khi /status báo
+     * led_probe.available = true; loa chưa có đường LED ghi được sẽ
+     * trả lỗi LED_UNAVAILABLE.
+     */
+    suspend fun setLed(
+        speakerIp: String,
+        color: String?,
+        brightness: Int?,
+        off: Boolean,
+        token: String? = null
+    ): Result<JSONObject> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val payload = JSONObject()
+                if (color != null) payload.put("color", color)
+                if (brightness != null) payload.put("brightness", brightness.coerceIn(0, 100))
+                if (off) payload.put("off", true)
+                postJson(speakerIp, "/led", payload, token, "Đặt LED")
+            }
+        }
 }

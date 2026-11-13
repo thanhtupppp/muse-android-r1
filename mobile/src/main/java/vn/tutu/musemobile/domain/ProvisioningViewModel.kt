@@ -175,6 +175,19 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     var speakerVolume by mutableStateOf(70)
         private set
 
+    /** LED vòng: chỉ khả dụng khi /status báo led_probe.available. */
+    var ledAvailable by mutableStateOf(false)
+        private set
+
+    var ledColor by mutableStateOf("#FF8C00")
+        private set
+
+    var ledBrightness by mutableStateOf(80)
+        private set
+
+    var ledOn by mutableStateOf(false)
+        private set
+
     var commandResult by mutableStateOf("")
         private set
 
@@ -476,6 +489,20 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                             }
                         }
                     }
+                    // Kết quả dò đường LED vòng từ phía loa: có đường
+                    // điều khiển ghi được thì thẻ LED ở tab Home mới hiện.
+                    val ledProbe = res.optJSONObject("led_probe")
+                    ledAvailable = ledProbe?.optBoolean("available", false) ?: false
+                    if (ledProbe != null && ledProbe.length() > 0) {
+                        val strategy = ledProbe.optString("strategy", "none")
+                        sb.append(
+                            if (ledAvailable) {
+                                "• LED vòng: ✅ có đường điều khiển ($strategy)\n"
+                            } else {
+                                "• LED vòng: chưa tìm thấy đường điều khiển ghi được ($strategy)\n"
+                            }
+                        )
+                    }
                     sb.append("• Mạng: $net")
                     commandResult = sb.toString()
                 },
@@ -497,6 +524,35 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                 },
                 onFailure = { err ->
                     commandResult = "❌ Lỗi đổi âm lượng: ${err.message}"
+                }
+            )
+        }
+    }
+
+    /** Đặt màu/độ sáng/tắt vòng LED qua POST /led (chỉ khi ledAvailable). */
+    fun setLed(color: String? = null, brightness: Int? = null, off: Boolean = false, ip: String? = null) {
+        val targetIp = (ip ?: speakerIp).trim()
+        if (color != null) ledColor = color
+        if (brightness != null) ledBrightness = brightness.coerceIn(0, 100)
+        ledOn = !off && (brightness ?: ledBrightness) > 0
+        viewModelScope.launch {
+            commandResult = if (off) "Đang tắt LED vòng..." else "Đang đặt LED vòng..."
+            apiClient.setLed(
+                speakerIp = targetIp,
+                color = color,
+                brightness = brightness,
+                off = off,
+                token = authToken()
+            ).fold(
+                onSuccess = {
+                    commandResult = if (off) {
+                        "✅ Đã tắt LED vòng"
+                    } else {
+                        "✅ Đã đặt LED vòng: $ledColor, sáng $ledBrightness%"
+                    }
+                },
+                onFailure = { err ->
+                    commandResult = "❌ Lỗi đặt LED: ${err.message}"
                 }
             )
         }

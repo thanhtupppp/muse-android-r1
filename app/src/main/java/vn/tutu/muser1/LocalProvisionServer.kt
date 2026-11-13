@@ -19,6 +19,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * GET  http://192.168.43.1:8080/status
  * GET  http://192.168.43.1:8080/wifi-scan    (loa tự quét Wi-Fi)
  * GET  http://192.168.43.1:8080/wifi-saved   (mạng đã lưu trên loa)
+ * GET  http://192.168.43.1:8080/led          (trạng thái + kết quả dò đường LED)
+ * POST http://192.168.43.1:8080/led          (đặt màu/độ sáng/tắt vòng LED)
  * POST http://192.168.43.1:8080/provision-wifi
  * POST http://192.168.43.1:8080/wifi-forget  (quên một mạng đã lưu)
  * POST http://192.168.43.1:8080/wifi-use     (chuyển sang mạng đã lưu)
@@ -83,6 +85,11 @@ class LocalProvisionServer(
                 } else {
                     unauthorized()
                 }
+                "/led" -> if (isAuthorized(session)) {
+                    json(response = JSONObject().put("ok", true).put("led", LedControl.statusJson(context)))
+                } else {
+                    unauthorized()
+                }
                 else -> notFound()
             }
 
@@ -93,6 +100,7 @@ class LocalProvisionServer(
                 "/configure-muse", "/pair" -> configureMuse(session)
                 "/unconfigure-muse" -> unconfigureMuse(session)
                 "/open-pairing-window", "/open-muse-pairing" -> openPairingWindow(session)
+                "/led" -> setLed(session)
                 "/command" -> handleCommand(session)
                 else -> notFound()
             }
@@ -601,6 +609,38 @@ class LocalProvisionServer(
         }
     }
 
+    /**
+     * POST /led {color?: "#RRGGBB", brightness?: 0..100, off?: true}.
+     * Cùng luật xác thực như các endpoint ghi khác. Khi probe chưa thấy
+     * đường xuống đèn ghi được, LedControl ném LED_UNAVAILABLE — trả lỗi
+     * thẳng, không giả vờ đã đặt.
+     */
+    private fun setLed(session: IHTTPSession): Response {
+        if (!isAuthorized(session)) {
+            return unauthorized()
+        }
+        val contentLength = session.headers["content-length"]?.toLongOrNull() ?: 0L
+        if (contentLength > MAX_CONTENT_LENGTH_BYTES) {
+            return badRequest("PAYLOAD_TOO_LARGE")
+        }
+        return try {
+            val content = mutableMapOf<String, String>()
+            session.parseBody(content)
+            val rawBody = content["postData"] ?: return badRequest("MISSING_BODY")
+            val body = JSONObject(rawBody)
+            val color = if (body.has("color")) body.optString("color") else null
+            val brightness = if (body.has("brightness")) body.optInt("brightness") else null
+            val off = body.optBoolean("off", false)
+            val led = LedControl.apply(context, color, brightness, off)
+            json(response = JSONObject().put("ok", true).put("led", led))
+        } catch (error: IllegalStateException) {
+            badRequest(error.message ?: "LED_ERROR")
+        } catch (error: Exception) {
+            Log.e(TAG, "Error setting LED", error)
+            badRequest("INVALID_REQUEST: ${SecretRedactor.redact(error.message ?: "")}")
+        }
+    }
+
     private fun handleCommand(session: IHTTPSession): Response {
         if (!isAuthorized(session)) {
             return unauthorized()
@@ -691,6 +731,10 @@ class LocalProvisionServer(
                     .put("mic_probe", parseJsonOrEmpty(MusePreferences.getVoiceMicProbe(context)))
                     .put("call_probe", parseJsonOrEmpty(MusePreferences.getVoiceCallProbe(context)))
             )
+            // Dò đường LED vòng: node sysfs tìm thấy + có ghi được không +
+            // service vendor liên quan (rỗng nếu chưa chạy probe). Mobile
+            // chỉ hiện thẻ LED khi led_probe.available = true.
+            .put("led_probe", LedControl.probeJson(context))
     }
 
     private fun json(response: JSONObject): Response {

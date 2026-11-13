@@ -157,6 +157,7 @@ class AgentService : Service() {
             runVoiceProbes()
         }
         maybeRunMicProbe()
+        maybeRunLedProbe()
         startDiscoveryResponder()
         startTelemetry()
         val forceReload = intent?.action == ACTION_RELOAD_MUSE_SESSION
@@ -178,6 +179,22 @@ class AgentService : Service() {
                 MusePreferences.setVoiceMicProbe(this, mic.toString())
             } catch (error: Exception) {
                 Log.e(TAG, "Mic probe lỗi", error)
+            }
+        }.start()
+    }
+
+    @Volatile
+    private var ledProbeRan = false
+
+    /** LED probe chạy nền đúng một lần sau khi service khởi động. */
+    private fun maybeRunLedProbe() {
+        if (ledProbeRan) return
+        ledProbeRan = true
+        Thread {
+            try {
+                LedControl.probe(this)
+            } catch (error: Exception) {
+                Log.e(TAG, "LED probe lỗi", error)
             }
         }.start()
     }

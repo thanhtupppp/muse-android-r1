@@ -24,6 +24,7 @@ object MusePreferences {
     private const val KEY_VOICE_APP_ID = "voice_app_id"
     private const val KEY_VOICE_MIC_PROBE = "voice_mic_probe"
     private const val KEY_VOICE_CALL_PROBE = "voice_call_probe"
+    private const val KEY_LED_PROBE = "led_probe"
     const val DEFAULT_VOICE_APP_ID = "hatch-web"
 
     const val DEFAULT_NOISE_HOST = "hatch.metaaivm.com"
@@ -262,6 +263,19 @@ object MusePreferences {
     fun getVoiceCallProbe(context: Context): String {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString(KEY_VOICE_CALL_PROBE, "")
+            .orEmpty()
+    }
+
+    fun setLedProbe(context: Context, json: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_LED_PROBE, json)
+            .apply()
+    }
+
+    fun getLedProbe(context: Context): String {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_LED_PROBE, "")
             .orEmpty()
     }
 

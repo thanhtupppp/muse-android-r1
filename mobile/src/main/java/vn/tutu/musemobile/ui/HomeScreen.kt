@@ -3,7 +3,11 @@ package vn.tutu.musemobile.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,11 +15,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.VolumeUp
@@ -33,6 +41,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -227,6 +237,96 @@ fun HomeScreen(viewModel: ProvisioningViewModel) {
                     viewModel.testTts(ttsText, speakerIp.trim())
                 }
             )
+        }
+
+        // ===== Đèn LED vòng (chỉ hiện khi loa báo có đường điều khiển) =====
+        if (viewModel.ledAvailable) {
+            AppCard {
+                CardHeader(
+                    icon = Icons.Filled.Lightbulb,
+                    title = "Đèn LED vòng",
+                    subtitle = "Màu và độ sáng vòng đèn trên loa"
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+
+                var ledBrightness by remember(viewModel.ledBrightness) {
+                    mutableFloatStateOf(viewModel.ledBrightness.toFloat())
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Độ sáng",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    StatusChip("${ledBrightness.toInt()}%", ChipKind.INFO)
+                }
+                Slider(
+                    value = ledBrightness,
+                    onValueChange = { ledBrightness = it },
+                    onValueChangeFinished = {
+                        viewModel.setSpeakerIp(speakerIp.trim())
+                        viewModel.setLed(brightness = ledBrightness.toInt(), ip = speakerIp.trim())
+                    },
+                    valueRange = 0f..100f,
+                    steps = 19
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Màu",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                val ledPresets = listOf(
+                    "#FF0000", "#FF8C00", "#FFC400", "#00C853", "#00CED1",
+                    "#2979FF", "#9370DB", "#FF4081", "#FFFFFF"
+                )
+                ledPresets.chunked(5).forEach { rowColors ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        for (hex in rowColors) {
+                            val isSelected =
+                                viewModel.ledOn && viewModel.ledColor.equals(hex, ignoreCase = true)
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(android.graphics.Color.parseColor(hex)))
+                                    .border(
+                                        width = if (isSelected) 3.dp else 1.dp,
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.outline
+                                        },
+                                        shape = CircleShape
+                                    )
+                                    .clickable {
+                                        viewModel.setSpeakerIp(speakerIp.trim())
+                                        viewModel.setLed(
+                                            color = hex,
+                                            brightness = ledBrightness.toInt(),
+                                            ip = speakerIp.trim()
+                                        )
+                                    }
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+                LoadingButton(
+                    text = "Tắt đèn",
+                    loadingText = "Đang tắt...",
+                    loading = false,
+                    icon = Icons.Filled.PowerSettingsNew,
+                    onClick = {
+                        viewModel.setSpeakerIp(speakerIp.trim())
+                        viewModel.setLed(off = true, ip = speakerIp.trim())
+                    }
+                )
+            }
         }
 
         if (viewModel.status.isNotBlank()) {
