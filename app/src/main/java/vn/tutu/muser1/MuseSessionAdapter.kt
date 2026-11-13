@@ -180,33 +180,77 @@ class MuseSessionAdapter(
         val refreshToken = MusePreferences.getMuseRefreshToken(context)
         val sdkToken = MusePreferences.getMuseToken(context).takeIf { it.startsWith("mgst_") }
 
-        if (refreshToken.isNotEmpty() || !sdkToken.isNullOrEmpty()) {
+        // Refresh có kỷ luật như bản chính thức (service.py): chỉ refresh khi
+        // access token đã quá 3 giờ hoặc chưa có access token, và giãn cách
+        // các lần thử refresh thất bại tối thiểu 300 giây. Refresh ở mọi vòng
+        // reconnect vừa dễ ăn rate-limit vừa tự invalidate refresh token cũ.
+        // Trả về "authRejected" (true) chỉ khi refresh bị 401 — 403 không phải
+        // bằng chứng token bị thu hồi (xem vm_api.c của bản ESP32).
+        fun attemptRefresh(): Boolean? {
             val effectiveRefresh = refreshToken.ifEmpty { sdkToken.orEmpty() }
+            if (effectiveRefresh.isEmpty()) return null
+            val now = System.currentTimeMillis()
+            MusePreferences.setLastRefreshAttemptMs(context, now)
             val (tokens, refreshStatus) = MuseApi.refreshDeviceToken(
                 refreshToken = effectiveRefresh,
-                // device_id của Muse Gadget phải là "hatch-link:<mac>",
-                // không phải device id nội bộ (MQTT) của Agent.
-                deviceId = MusePreferences.getMuseIdentity(context).deviceId,
+                // Body refresh của cả hai bản chính thức đều dùng node_id
+                // "homelink-..." làm device_id; "hatch-link:<mac>" chỉ dùng
+                // cho transcript pairing và get_device_info.
+                deviceId = MusePreferences.getMuseIdentity(context).nodeId,
                 sdkToken = sdkToken,
                 apiBaseUrl = apiBase
             )
             if (tokens != null) {
                 MusePreferences.saveMuseSessionTokens(context, tokens.accessToken, tokens.refreshToken)
-            } else if (refreshStatus == 401 || refreshStatus == 403) {
-                Log.w(TAG, "Muse token refresh bị từ chối (HTTP $refreshStatus)")
-                return Triple(null, "REFRESH_HTTP_$refreshStatus", true)
+                MusePreferences.setLastRefreshSuccessMs(context, now)
+                return true
+            }
+            if (refreshStatus == 401) {
+                Log.w(TAG, "Muse token refresh bị từ chối (HTTP 401)")
+                return false
+            }
+            Log.w(TAG, "Muse token refresh thất bại tạm thời (HTTP $refreshStatus); dùng access token hiện có nếu còn")
+            return null
+        }
+
+        val hasAccess = MusePreferences.getMuseAccessToken(context).isNotEmpty()
+        val nowMs = System.currentTimeMillis()
+        val refreshDue = !hasAccess ||
+            (nowMs - MusePreferences.getLastRefreshSuccessMs(context)) >= REFRESH_AGE_MS
+        val refreshThrottled =
+            (nowMs - MusePreferences.getLastRefreshAttemptMs(context)) < REFRESH_RETRY_THROTTLE_MS
+        if (refreshDue && !refreshThrottled) {
+            if (attemptRefresh() == false) {
+                return Triple(null, "REFRESH_HTTP_401", true)
             }
         }
 
-        val accessToken = MusePreferences.getMuseAccessToken(context)
+        var accessToken = MusePreferences.getMuseAccessToken(context)
         if (accessToken.isEmpty()) {
             return Triple(null, "MISSING_ACCESS_TOKEN", false)
         }
 
-        val (vms, vmStatus) = MuseApi.fetchVms(accessToken, apiBaseUrl = apiBase)
-        if (vmStatus == 401 || vmStatus == 403) {
-            Log.w(TAG, "fetch_vms bị từ chối (HTTP $vmStatus)")
-            return Triple(null, "FETCH_VMS_HTTP_$vmStatus", true)
+        var (vms, vmStatus) = MuseApi.fetchVms(accessToken, apiBaseUrl = apiBase)
+        if (vmStatus == 401 && refreshToken.isNotEmpty()) {
+            // Access token hết hạn thật (không phải do refresh theo tuổi):
+            // ép refresh đúng một lần rồi thử lại fetch_vms trước khi kết luận.
+            Log.w(TAG, "fetch_vms trả 401; ép refresh một lần rồi thử lại")
+            if (attemptRefresh() == false) {
+                return Triple(null, "REFRESH_HTTP_401", true)
+            }
+            accessToken = MusePreferences.getMuseAccessToken(context)
+            val retry = MuseApi.fetchVms(accessToken, apiBaseUrl = apiBase)
+            vms = retry.first
+            vmStatus = retry.second
+        }
+        if (vmStatus == 401) {
+            Log.w(TAG, "fetch_vms bị từ chối (HTTP 401)")
+            return Triple(null, "FETCH_VMS_HTTP_401", true)
+        }
+        if (vmStatus == 403) {
+            // 403 không phải bằng chứng revoked: coi là lỗi tạm thời, thử lại sau.
+            Log.w(TAG, "fetch_vms bị chặn tạm thời (HTTP 403)")
+            return Triple(null, "FETCH_VMS_HTTP_403", false)
         }
         val selectedVm = vms.firstOrNull { it.isDefault } ?: vms.firstOrNull()
         if (selectedVm == null) {
@@ -406,7 +450,12 @@ class MuseSessionAdapter(
 
                             val ev = msg.optString("event")
                             if (ev == "link.unpaired" || ev == "node.unpaired") {
-                                Log.w(TAG, "Muse đã hủy ghép đôi thiết bị ($ev)")
+                                Log.w(TAG, "Muse đã hủy ghép đôi thiết bị ($ev); xoá pairing đã lưu và dừng reconnect")
+                                // Như bản chính thức (service.py xoá pairing file khi
+                                // UNPAIRED): nếu không xoá, vòng lặp cứ reconnect bằng
+                                // token đã bị huỷ mỗi 60 giây mãi mãi. Identity Muse
+                                // và provision token được giữ nguyên.
+                                MusePreferences.clearMusePairing(context)
                                 return closeAndFail(ws, "UNPAIRED", SessionOutcome.UNPAIRED)
                             }
 
@@ -520,6 +569,12 @@ class MuseSessionAdapter(
     companion object {
         private const val TAG = "MuseR1"
         private const val CONTROL_PATH = "/link-control"
+
+        /** Chỉ refresh khi access token đã quá 3 giờ, như bản chính thức. */
+        private const val REFRESH_AGE_MS = 3 * 60 * 60 * 1000L
+
+        /** Giãn cách tối thiểu giữa hai lần thử refresh sau một lần thất bại. */
+        private const val REFRESH_RETRY_THROTTLE_MS = 300 * 1000L
 
         fun buildNoiseUrl(noiseHost: String, vmId: String): String {
             val cleanHost = MusePreferences.normalizeHost(noiseHost).ifEmpty { MusePreferences.DEFAULT_NOISE_HOST }

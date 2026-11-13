@@ -13,6 +13,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Chỉ app cùng chữ ký (chính Agent/Mobile của chủ loa) mới gửi được các
+         broadcast provisioning nhạy cảm vào ProvisionReceiver. -->
+    <permission
+        android:name="vn.tutu.muser1.permission.PROVISION"
+        android:label="Muse R1 provisioning"
+        android:protectionLevel="signature" />
+
     <uses-feature
         android:name="android.hardware.bluetooth"
         android:required="false" />
@@ -28,7 +35,8 @@
 
         <receiver
             android:name=".ProvisionReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="vn.tutu.muser1.permission.PROVISION">
             <intent-filter>
                 <action android:name="vn.tutu.muser1.PROVISION_WIFI" />
                 <action android:name="vn.tutu.muser1.CONFIGURE_MUSE" />

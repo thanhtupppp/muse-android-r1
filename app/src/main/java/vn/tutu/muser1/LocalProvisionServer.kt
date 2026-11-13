@@ -61,7 +61,11 @@ class LocalProvisionServer(
         return when (session.method) {
             Method.GET -> when (uri) {
                 "/health" -> json(response = healthResponse())
-                "/status" -> json(response = statusResponse())
+                "/status" -> if (isAuthorized(session)) {
+                    json(response = statusResponse())
+                } else {
+                    unauthorized()
+                }
                 else -> notFound()
             }
 
@@ -76,14 +80,25 @@ class LocalProvisionServer(
         }
     }
 
+    /**
+     * Quy tắc xác thực thống nhất cho các endpoint ghi và /status:
+     * - Loa chưa cấu hình Muse (trạng thái cài đặt ban đầu, thường là đang ở
+     *   hotspot của chính loa): cho phép không cần token.
+     * - Loa đã cấu hình: bắt buộc header `x-muse-token` trùng provision token
+     *   (token được sinh một lần qua [MusePreferences.ensureProvisionToken] và
+     *   được trả cho Mobile trong response cấu hình Muse thành công).
+     * Trước đây check này là mã chết vì không luồng nào từng đặt token.
+     */
+    private fun isAuthorized(session: IHTTPSession): Boolean {
+        if (!MusePreferences.isMusePaired(context)) return true
+        val expected = MusePreferences.ensureProvisionToken(context)
+        val provided = session.headers["x-muse-token"]?.trim().orEmpty()
+        return provided.isNotEmpty() && provided == expected
+    }
+
     private fun provisionWifi(session: IHTTPSession): Response {
-        // Kiểm tra xác thực token nếu thiết bị đã được cấu hình token
-        val expectedToken = MusePreferences.getProvisionToken(context)
-        if (expectedToken.isNotEmpty()) {
-            val token = session.headers["x-muse-token"]
-            if (token != expectedToken) {
-                return unauthorized()
-            }
+        if (!isAuthorized(session)) {
+            return unauthorized()
         }
 
         // Giới hạn độ dài Content-Length tránh tràn bộ nhớ
@@ -174,6 +189,10 @@ class LocalProvisionServer(
     }
 
     private fun configureMuse(session: IHTTPSession): Response {
+        if (!isAuthorized(session)) {
+            return unauthorized()
+        }
+
         val contentLengthStr = session.headers["content-length"]
         val contentLength = contentLengthStr?.toLongOrNull() ?: 0L
         if (contentLength > MAX_CONTENT_LENGTH_BYTES) {
@@ -233,6 +252,8 @@ class LocalProvisionServer(
                         .put("vm_id", vmId)
                         .put("device_id", deviceId)
                         .put("muse_paired", true)
+                        // Mobile lưu token này để xác thực các lần gọi :8080 về sau.
+                        .put("provision_token", MusePreferences.ensureProvisionToken(context))
                         .put("message", "Direct Muse VM configured ($effectiveHost / $vmId)")
                 )
             }
@@ -263,6 +284,8 @@ class LocalProvisionServer(
                     .put("message", "Muse token configured successfully")
                     .put("device_id", deviceId)
                     .put("muse_paired", true)
+                    // Mobile lưu token này để xác thực các lần gọi :8080 về sau.
+                    .put("provision_token", MusePreferences.ensureProvisionToken(context))
             )
         } catch (error: Exception) {
             Log.e(TAG, "Error configuring Muse token", error)
@@ -271,6 +294,10 @@ class LocalProvisionServer(
     }
 
     private fun handleCommand(session: IHTTPSession): Response {
+        if (!isAuthorized(session)) {
+            return unauthorized()
+        }
+
         val contentLengthStr = session.headers["content-length"]
         val contentLength = contentLengthStr?.toLongOrNull() ?: 0L
         if (contentLength > MAX_CONTENT_LENGTH_BYTES) {

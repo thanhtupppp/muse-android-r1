@@ -17,6 +17,9 @@ object MusePreferences {
     private const val KEY_MUSE_IDENTITY_MAC = "muse_identity_mac"
     private const val KEY_DIRECT_VM_ID = "muse_direct_vm_id"
     private const val KEY_DIRECT_TOKEN = "muse_direct_token"
+    private const val KEY_PROVISION_TOKEN = "provision_token"
+    private const val KEY_LAST_REFRESH_OK_MS = "muse_last_refresh_ok_ms"
+    private const val KEY_LAST_REFRESH_ATTEMPT_MS = "muse_last_refresh_attempt_ms"
 
     const val DEFAULT_NOISE_HOST = "hatch.metaaivm.com"
 
@@ -152,14 +155,60 @@ object MusePreferences {
 
     fun getProvisionToken(context: Context): String {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString("provision_token", "")
+            .getString(KEY_PROVISION_TOKEN, "")
             .orEmpty()
     }
 
     fun saveProvisionToken(context: Context, token: String) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putString("provision_token", token)
+            .putString(KEY_PROVISION_TOKEN, token)
+            .apply()
+    }
+
+    /**
+     * Trả về provision token dùng để xác thực HTTP :8080 / SPP sau khi loa đã
+     * được cấu hình Muse; chưa có thì sinh ngẫu nhiên một lần và lưu bền.
+     * Token được in ra logcat đúng một lần lúc sinh (giống mã cài đặt in trên
+     * nhãn thiết bị) để chủ loa lấy lại qua ADB khi cần; Mobile nhận token qua
+     * response của lần cấu hình Muse đầu tiên và tự đính kèm sau đó.
+     */
+    @Synchronized
+    fun ensureProvisionToken(context: Context): String {
+        val existing = getProvisionToken(context)
+        if (existing.isNotEmpty()) return existing
+        val bytes = ByteArray(16)
+        java.security.SecureRandom().nextBytes(bytes)
+        val created = bytes.joinToString("") { "%02x".format(it) }
+        saveProvisionToken(context, created)
+        android.util.Log.i(
+            "MuseR1",
+            "Provision token cho :8080 đã được tạo (lưu lại để dùng khi cần qua ADB): $created"
+        )
+        return created
+    }
+
+    fun getLastRefreshSuccessMs(context: Context): Long {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getLong(KEY_LAST_REFRESH_OK_MS, 0L)
+    }
+
+    fun setLastRefreshSuccessMs(context: Context, timeMs: Long) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(KEY_LAST_REFRESH_OK_MS, timeMs)
+            .apply()
+    }
+
+    fun getLastRefreshAttemptMs(context: Context): Long {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getLong(KEY_LAST_REFRESH_ATTEMPT_MS, 0L)
+    }
+
+    fun setLastRefreshAttemptMs(context: Context, timeMs: Long) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(KEY_LAST_REFRESH_ATTEMPT_MS, timeMs)
             .apply()
     }
 
@@ -225,6 +274,8 @@ object MusePreferences {
             .remove(KEY_USERNAME)
             .remove(KEY_DIRECT_VM_ID)
             .remove(KEY_DIRECT_TOKEN)
+            .remove(KEY_LAST_REFRESH_OK_MS)
+            .remove(KEY_LAST_REFRESH_ATTEMPT_MS)
             .apply()
     }
 

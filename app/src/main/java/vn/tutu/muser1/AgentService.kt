@@ -140,6 +140,10 @@ class AgentService : Service() {
         if (intent?.action == ACTION_REOPEN_PAIRING_WINDOW) {
             museBleServer?.reopenPairingWindow()
         }
+        if (intent?.action == ACTION_CONFIRM_PAIRING_PRESS) {
+            Log.i(TAG, "Nhận CONFIRM_PAIRING_PRESS qua intent service (giả lập nút tròn, kênh ADB)")
+            SpeakerButtonMonitor.notePress("adb_service")
+        }
         startDiscoveryResponder()
         startTelemetry()
         val forceReload = intent?.action == ACTION_RELOAD_MUSE_SESSION
@@ -323,6 +327,7 @@ class AgentService : Service() {
         private const val TAG = "MuseR1"
         private const val ACTION_RELOAD_MUSE_SESSION = "vn.tutu.muser1.ACTION_RELOAD_MUSE_SESSION"
         private const val ACTION_REOPEN_PAIRING_WINDOW = "vn.tutu.muser1.ACTION_REOPEN_PAIRING_WINDOW"
+        private const val ACTION_CONFIRM_PAIRING_PRESS = "vn.tutu.muser1.ACTION_CONFIRM_PAIRING_PRESS"
         private const val NOTIFICATION_ID = 1001
         private const val TELEMETRY_INTERVAL_SECONDS = 30L
         private const val READY_ANNOUNCEMENT_DELAY_MS = 800L
@@ -363,6 +368,23 @@ class AgentService : Service() {
         fun reloadMuseSession(context: Context) {
             val intent = Intent(context, AgentService::class.java).apply {
                 action = ACTION_RELOAD_MUSE_SESSION
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(context, intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        /**
+         * Giả lập bấm nút tròn (confirm_press) qua ADB:
+         * adb shell am startservice -n vn.tutu.muser1/.AgentService \
+         *   -a vn.tutu.muser1.ACTION_CONFIRM_PAIRING_PRESS
+         * (Đường broadcast cũ đã khoá bằng signature permission.)
+         */
+        fun confirmPairingPress(context: Context) {
+            val intent = Intent(context, AgentService::class.java).apply {
+                action = ACTION_CONFIRM_PAIRING_PRESS
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 ContextCompat.startForegroundService(context, intent)

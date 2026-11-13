@@ -6,23 +6,23 @@ import android.content.Intent
 import android.util.Log
 
 /**
- * Kênh khôi phục/kỹ thuật qua ADB.
+ * Kênh cấu hình qua broadcast — ĐÃ KHOÁ bằng signature permission
+ * (vn.tutu.muser1.permission.PROVISION trong AndroidManifest): chỉ app cùng
+ * chữ ký mới gửi được. Trước đây receiver exported không permission nên app
+ * bất kỳ trên loa cũng giả lập được nút bấm, ghi đè Muse token hoặc ép đổi
+ * Wi-Fi. ADB shell KHÔNG còn gửi được các broadcast này; dùng các đường sau:
  *
- * Cấu hình Wi‑Fi:
- * adb shell am broadcast -a vn.tutu.muser1.PROVISION_WIFI \
- *   --es ssid "TEN_WIFI_NHA" --es password "MAT_KHAU"
- *
- * Cấu hình Muse token:
- * adb shell am broadcast -a vn.tutu.muser1.CONFIGURE_MUSE \
- *   --es muse_token "mgst_..."
- * (hoặc dùng action vn.tutu.muser1.CONFIGURE_AGENT)
+ * Cấu hình Wi‑Fi / Muse token qua ADB: dùng app Mobile, hoặc HTTP :8080 khi
+ * loa đang ở trạng thái chưa cấu hình (xem LocalProvisionServer).
  *
  * Giả lập bấm nút tròn trên loa (xác nhận pair confirm_press, để kiểm chứng
  * cơ chế khi chưa chắc nút thật phát keycode nào):
- * adb shell am broadcast -a vn.tutu.muser1.CONFIRM_PAIRING_PRESS
+ * adb shell am startservice -n vn.tutu.muser1/.AgentService \
+ *   -a vn.tutu.muser1.ACTION_CONFIRM_PAIRING_PRESS
  *
  * Mở lại cửa sổ pairing BLE 10 phút (khi app Muse không còn thấy loa):
- * adb shell am broadcast -a vn.tutu.muser1.REOPEN_PAIRING_WINDOW
+ * adb shell am startservice -n vn.tutu.muser1/.AgentService \
+ *   -a vn.tutu.muser1.ACTION_REOPEN_PAIRING_WINDOW
  */
 class ProvisionReceiver : BroadcastReceiver() {
 

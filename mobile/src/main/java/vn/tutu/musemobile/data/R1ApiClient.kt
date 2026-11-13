@@ -265,17 +265,17 @@ class R1ApiClient(private val context: Context? = null) {
         }
     }
 
-    suspend fun setVolume(speakerIp: String, volume: Int): Result<JSONObject> {
+    suspend fun setVolume(speakerIp: String, volume: Int, token: String? = null): Result<JSONObject> {
         val command = JSONObject()
             .put("name", "muse_r1.set_volume")
             .put("volume", volume.coerceIn(0, 100))
-        return executeCommand(speakerIp, command)
+        return executeCommand(speakerIp, command, token)
     }
 
-    suspend fun testTts(speakerIp: String, text: String): Result<JSONObject> {
+    suspend fun testTts(speakerIp: String, text: String, token: String? = null): Result<JSONObject> {
         val command = JSONObject()
             .put("name", "muse_r1.tts")
             .put("text", text)
-        return executeCommand(speakerIp, command)
+        return executeCommand(speakerIp, command, token)
     }
 }

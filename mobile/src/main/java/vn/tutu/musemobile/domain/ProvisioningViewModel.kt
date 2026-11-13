@@ -15,6 +15,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 import vn.tutu.musemobile.data.BluetoothProvisioner
 import vn.tutu.musemobile.data.R1ApiClient
 import vn.tutu.musemobile.data.R1DiscoveryClient
@@ -28,6 +29,28 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
 
     private val apiClient = R1ApiClient(application)
     private val discoveryClient = R1DiscoveryClient()
+
+    // Provision token của loa: loa sinh token này khi được cấu hình Muse lần
+    // đầu và trả về trong response cấu hình; từ đó mọi lệnh gọi :8080 (status,
+    // command, cấu hình lại) phải đính kèm header x-muse-token. Mobile lưu
+    // token bền ở đây để các lần mở app sau vẫn điều khiển được loa.
+    private val mobilePrefs =
+        application.getSharedPreferences("musemobile_prefs", Context.MODE_PRIVATE)
+
+    private var savedProvisionToken: String
+        get() = mobilePrefs.getString("provision_token", "").orEmpty()
+        set(value) {
+            mobilePrefs.edit().putString("provision_token", value).apply()
+        }
+
+    private fun authToken(): String? = savedProvisionToken.ifEmpty { null }
+
+    private fun captureProvisionToken(response: JSONObject) {
+        val token = response.optString("provision_token", "").trim()
+        if (token.isNotEmpty()) {
+            savedProvisionToken = token
+        }
+    }
     private val wifiScanner = WifiScanner(application)
     private val installer = R1Installer(application)
     private val bluetoothProvisioner = BluetoothProvisioner(application)
@@ -187,9 +210,11 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                 speakerIp = targetIp,
                 serverHost = host,
                 vmId = cleanVm,
-                deviceToken = cleanTok
+                deviceToken = cleanTok,
+                token = authToken()
             ).fold(
                 onSuccess = { res ->
+                    captureProvisionToken(res)
                     isMusePaired = true
                     val devId = res.optString("device_id", "R1")
                     val savedHost = res.optString("noise_host", host)
@@ -224,8 +249,9 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
             isPairingMuse = true
             isMuseConnected = false
             musePairStatus = "Đang gửi Muse Token tới R1 ($targetIp:8080)..."
-            apiClient.configureMuse(speakerIp = targetIp, museToken = rawToken).fold(
+            apiClient.configureMuse(speakerIp = targetIp, museToken = rawToken, token = authToken()).fold(
                 onSuccess = { res ->
+                    captureProvisionToken(res)
                     isMusePaired = true
                     val devId = res.optString("device_id", "R1")
                     musePairStatus = "✅ Đã ghép đôi thành công! Thiết bị: $devId"
@@ -244,7 +270,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         val targetIp = (ip ?: speakerIp).trim()
         viewModelScope.launch {
             commandResult = "Đang kiểm tra trạng thái R1..."
-            apiClient.status(speakerIp = targetIp).fold(
+            apiClient.status(speakerIp = targetIp, token = authToken()).fold(
                 onSuccess = { res ->
                     val paired = res.optBoolean("muse_paired", false)
                     val connected = res.optBoolean("muse_connected", false)
@@ -280,7 +306,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         speakerVolume = volume.coerceIn(0, 100)
         viewModelScope.launch {
             commandResult = "Đang đặt âm lượng $volume%..."
-            apiClient.setVolume(speakerIp = targetIp, volume = volume).fold(
+            apiClient.setVolume(speakerIp = targetIp, volume = volume, token = authToken()).fold(
                 onSuccess = {
                     commandResult = "✅ Đã đặt âm lượng thành $volume%"
                 },
@@ -295,7 +321,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         val targetIp = (ip ?: speakerIp).trim()
         viewModelScope.launch {
             commandResult = "Đang gửi TTS: \"$text\"..."
-            apiClient.testTts(speakerIp = targetIp, text = text).fold(
+            apiClient.testTts(speakerIp = targetIp, text = text, token = authToken()).fold(
                 onSuccess = {
                     commandResult = "✅ R1 đã nhận lệnh TTS: \"$text\""
                 },
@@ -434,7 +460,8 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                     speakerIp = targetHttpIp,
                     ssid = network.ssid,
                     password = password,
-                    security = network.security
+                    security = network.security,
+                    token = authToken()
                 )
 
                 if (httpResult.isSuccess) {
