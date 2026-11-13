@@ -337,6 +337,18 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                         sb.append("\n")
                     }
                     if (museErr.isNotEmpty()) sb.append("• Chi tiết: $museErr\n")
+                    // Mã lỗi cấu hình Wi-Fi thật từ phía loa (nếu đã từng thử):
+                    // CONNECT_TIMEOUT thường là sai mật khẩu, mạng 5 GHz
+                    // hoặc WPA3 — app tự nó không phân biệt được các ca này.
+                    val wifiProv = res.optJSONObject("wifi_provision")
+                    if (wifiProv != null && wifiProv.length() > 0) {
+                        val provSsid = wifiProv.optString("ssid", "")
+                        if (wifiProv.optBoolean("ok", false)) {
+                            sb.append("• Cấu hình Wi-Fi gần nhất: ✅ $provSsid → ${wifiProv.optString("ip", "")}\n")
+                        } else {
+                            sb.append("• Cấu hình Wi-Fi gần nhất: ❌ ${wifiProv.optString("code", "?")} (SSID: $provSsid)\n")
+                        }
+                    }
                     sb.append("• Mạng: $net")
                     commandResult = sb.toString()
                 },

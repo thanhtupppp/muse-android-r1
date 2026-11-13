@@ -20,6 +20,7 @@ object MusePreferences {
     private const val KEY_PROVISION_TOKEN = "provision_token"
     private const val KEY_LAST_REFRESH_OK_MS = "muse_last_refresh_ok_ms"
     private const val KEY_LAST_REFRESH_ATTEMPT_MS = "muse_last_refresh_attempt_ms"
+    private const val KEY_WIFI_PROVISION_LAST = "wifi_provision_last"
     private const val KEY_VOICE_APP_ID = "voice_app_id"
     private const val KEY_VOICE_MIC_PROBE = "voice_mic_probe"
     private const val KEY_VOICE_CALL_PROBE = "voice_call_probe"
@@ -217,6 +218,20 @@ object MusePreferences {
     }
 
     /** Voice app id đặt trên query của upgrade Noise cho phiên voice call (mặc định như SDK CLI). */
+    /** Kết quả lần cấu hình Wi-Fi gần nhất (JSON) — để chẩn đoán qua /status. */
+    fun setLastWifiProvision(context: Context, json: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_WIFI_PROVISION_LAST, json)
+            .apply()
+    }
+
+    fun getLastWifiProvision(context: Context): String {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_WIFI_PROVISION_LAST, "")
+            .orEmpty()
+    }
+
     fun getVoiceAppId(context: Context): String {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString(KEY_VOICE_APP_ID, DEFAULT_VOICE_APP_ID)

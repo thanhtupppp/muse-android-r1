@@ -44,6 +44,20 @@ object WifiProvisioner {
             if (result is ProvisionResult.Failure && result.apTouched) {
                 restoreAp(manager)
             }
+            // Ghi lại kết quả để chẩn đoán từ xa: đường HTTP trả 200 ngay khi
+            // mới LÊN LỊCH kết nối nên app không bao giờ thấy mã lỗi thật
+            // (CONNECT_TIMEOUT, SOFTAP_DISABLE_FAILED...) — trước đây chúng
+            // chỉ tồn tại trong logcat của loa. /status mục wifi_provision.
+            runCatching {
+                val record = org.json.JSONObject()
+                    .put("ssid", ssid.trimEnd('\r', '\n'))
+                    .put("at_ms", System.currentTimeMillis())
+                when (result) {
+                    is ProvisionResult.Success -> record.put("ok", true).put("ip", result.ip)
+                    is ProvisionResult.Failure -> record.put("ok", false).put("code", result.code)
+                }
+                MusePreferences.setLastWifiProvision(context, record.toString())
+            }
             result
         }
 

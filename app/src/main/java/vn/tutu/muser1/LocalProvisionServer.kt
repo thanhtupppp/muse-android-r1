@@ -401,6 +401,9 @@ class LocalProvisionServer(
             .put("has_muse_token", MusePreferences.getMuseToken(context).isNotEmpty())
             .put("has_direct_token", MusePreferences.hasDirectConfig(context))
             .put("bluetooth", btInfo)
+            // Kết quả lần cấu hình Wi-Fi gần nhất (mã lỗi thật phía loa,
+            // thay vì chỉ có thông báo timeout chung chung phía app).
+            .put("wifi_provision", parseJsonOrEmpty(MusePreferences.getLastWifiProvision(context)))
             // Phase 0 voice call: kết quả probe mic + probe stream realtime
             // gần nhất (rỗng nếu chưa chạy probe).
             .put(
