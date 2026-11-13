@@ -57,7 +57,7 @@ class R1ApiClient(private val context: Context? = null) {
             getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
                 val rawBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    val sample = rawBody.take(500)
+                    val sample = SecretRedactor.redact(rawBody.take(500))
                     throw IOException("HTTP ${response.code} ${response.message}; body=$sample")
                 }
                 val json = JSONObject(rawBody)
@@ -80,7 +80,7 @@ class R1ApiClient(private val context: Context? = null) {
             getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
                 val rawBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    val sample = rawBody.take(500)
+                    val sample = SecretRedactor.redact(rawBody.take(500))
                     throw IOException("HTTP ${response.code} ${response.message}; body=$sample")
                 }
                 val json = JSONObject(rawBody)
@@ -136,7 +136,7 @@ class R1ApiClient(private val context: Context? = null) {
             getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
                 val rawBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    val sample = rawBody.take(500)
+                    val sample = SecretRedactor.redact(rawBody.take(500))
                     throw IOException("R1 từ chối cấu hình Wi-Fi: HTTP ${response.code} ${response.message}; body=$sample")
                 }
                 val json = runCatching { JSONObject(rawBody) }.getOrNull()
@@ -223,7 +223,7 @@ class R1ApiClient(private val context: Context? = null) {
             getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
                 val rawBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    val sample = rawBody.take(500)
+                    val sample = SecretRedactor.redact(rawBody.take(500))
                     throw IOException("R1 từ chối xoá cấu hình Muse: HTTP ${response.code} ${response.message}; body=$sample")
                 }
                 val json = JSONObject(rawBody)
@@ -257,7 +257,7 @@ class R1ApiClient(private val context: Context? = null) {
             getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
                 val rawBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    val sample = rawBody.take(500)
+                    val sample = SecretRedactor.redact(rawBody.take(500))
                     throw IOException("R1 từ chối mở chế độ ghép nối: HTTP ${response.code} ${response.message}; body=$sample")
                 }
                 val json = JSONObject(rawBody)
@@ -282,7 +282,7 @@ class R1ApiClient(private val context: Context? = null) {
         getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
             val rawBody = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                val sample = rawBody.take(500)
+                val sample = SecretRedactor.redact(rawBody.take(500))
                 throw IOException("$label thất bại: HTTP ${response.code} ${response.message}; body=$sample")
             }
             val json = JSONObject(rawBody)
@@ -309,7 +309,7 @@ class R1ApiClient(private val context: Context? = null) {
         getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
             val rawBody = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                val sample = rawBody.take(500)
+                val sample = SecretRedactor.redact(rawBody.take(500))
                 throw IOException("$label thất bại: HTTP ${response.code} ${response.message}; body=$sample")
             }
             val json = JSONObject(rawBody)
@@ -366,7 +366,7 @@ class R1ApiClient(private val context: Context? = null) {
         getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
             val rawBody = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                val sample = rawBody.take(500)
+                val sample = SecretRedactor.redact(rawBody.take(500))
                 throw IOException("R1 từ chối cấu hình $label: HTTP ${response.code} ${response.message}; body=$sample")
             }
             val json = JSONObject(rawBody)
@@ -396,7 +396,7 @@ class R1ApiClient(private val context: Context? = null) {
             getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
                 val rawBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    val sample = rawBody.take(500)
+                    val sample = SecretRedactor.redact(rawBody.take(500))
                     throw IOException("Lệnh thất bại: HTTP ${response.code} ${response.message}; body=$sample")
                 }
                 val json = JSONObject(rawBody)

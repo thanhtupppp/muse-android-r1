@@ -914,7 +914,20 @@ class MuseBleServer(
 
         sendStatus("wifi_connecting")
         if (!alreadyConnectedToTarget) {
-            when (val res = WifiProvisioner.connect(context, req.ssid, req.password)) {
+            when (val res = WifiProvisioner.connect(
+                context,
+                req.ssid,
+                req.password,
+                via = "ble",
+                onStage = { phase ->
+                    // Cùng bộ pha với HTTP/SPP: báo mốc đã-lưu ngay khi
+                    // cấu hình được ghi bền, trước khi biết kết nối có
+                    // thành công hay không.
+                    if (phase == WifiProvisioner.Phase.SAVED) {
+                        sendStatus("wifi_saved")
+                    }
+                }
+            )) {
                 is WifiProvisioner.ProvisionResult.Success -> {
                     Log.i(TAG, "BLE Wi-Fi chuyển sang '${req.ssid}' thành công: IP ${res.ip}")
                 }

@@ -70,7 +70,7 @@ class ProvisionReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         backgroundExecutor.execute {
             try {
-                val result = WifiProvisioner.connect(appContext, ssid, password)
+                val result = WifiProvisioner.connect(appContext, ssid, password, via = "adb")
                 Log.i(TAG, "Wi‑Fi provisioning broadcast result: $result")
             } catch (error: Exception) {
                 Log.e(TAG, "Wi‑Fi provisioning broadcast failed", error)

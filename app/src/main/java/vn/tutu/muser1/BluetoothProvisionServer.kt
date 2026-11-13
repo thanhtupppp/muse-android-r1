@@ -189,7 +189,16 @@ class BluetoothProvisionServer(
                     val result = wifiProvisioner.connect(
                         context = context,
                         ssid = ssid,
-                        password = password
+                        password = password,
+                        via = "spp",
+                        onStage = { phase ->
+                            // Dòng tiến độ SAVED tách khỏi dòng kết quả
+                            // cuối (OK/ERROR): app biết loa đã lưu cấu
+                            // hình ngay cả khi bước kết nối sau đó hỏng.
+                            if (phase == WifiProvisioner.Phase.SAVED) {
+                                runCatching { writeResponse(connection, "SAVED\n") }
+                            }
+                        }
                     )
 
                     when (result) {
@@ -208,9 +217,9 @@ class BluetoothProvisionServer(
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Lỗi xử lý Bluetooth client: ${e.message}", e)
+                    Log.e(TAG, "Lỗi xử lý Bluetooth client: ${SecretRedactor.redact(e.message ?: "")}", e)
                     try {
-                        val msg = e.message ?: "BAD_REQUEST"
+                        val msg = SecretRedactor.redact(e.message ?: "BAD_REQUEST")
                         writeResponse(connection, "ERROR: $msg\n")
                     } catch (_: Exception) {
                     }

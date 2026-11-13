@@ -19,6 +19,7 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 import vn.tutu.musemobile.data.BluetoothProvisioner
 import vn.tutu.musemobile.data.R1ApiClient
+import vn.tutu.musemobile.data.SecretRedactor
 import vn.tutu.musemobile.data.R1DiscoveryClient
 import vn.tutu.musemobile.data.R1Installer
 import vn.tutu.musemobile.data.WifiScanner
@@ -182,7 +183,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
 
     private fun addInstallLog(msg: String) {
         val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-        installLogs = installLogs + "[$time] $msg"
+        installLogs = installLogs + "[$time] ${SecretRedactor.redact(msg)}"
     }
 
     fun getInstallLogsText(): String {
@@ -193,7 +194,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         sb.append("Trạng thái: $installStage\n")
         sb.append("------------------------------------------\n")
         installLogs.forEach { sb.append(it).append("\n") }
-        return sb.toString()
+        return SecretRedactor.redact(sb.toString())
     }
 
     @SuppressLint("MissingPermission")
@@ -460,10 +461,19 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                     val wifiProv = res.optJSONObject("wifi_provision")
                     if (wifiProv != null && wifiProv.length() > 0) {
                         val provSsid = wifiProv.optString("ssid", "")
+                        val provPhase = wifiProv.optString("phase", "")
+                        val provVia = wifiProv.optString("via", "")
                         if (wifiProv.optBoolean("ok", false)) {
                             sb.append("• Cấu hình Wi-Fi gần nhất: ✅ $provSsid → ${wifiProv.optString("ip", "")}\n")
                         } else {
-                            sb.append("• Cấu hình Wi-Fi gần nhất: ❌ ${wifiProv.optString("code", "?")} (SSID: $provSsid)\n")
+                            val provCode = wifiProv.optString("code", "?")
+                            sb.append("• Cấu hình Wi-Fi gần nhất: ❌ $provCode (SSID: $provSsid")
+                            if (provPhase.isNotEmpty()) sb.append(", pha: $provPhase")
+                            if (provVia.isNotEmpty()) sb.append(", qua: $provVia")
+                            sb.append(")\n")
+                            ProvisioningHelp.helpFor(provCode)?.let { help ->
+                                sb.append("  → $help\n")
+                            }
                         }
                     }
                     sb.append("• Mạng: $net")
@@ -728,7 +738,8 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                 val report = installer.diagnoseAgent(targetIp).getOrElse {
                     "Không lấy được chẩn đoán ADB: ${it.javaClass.simpleName}: ${it.message}"
                 }
-                diagnosticLogs = discoveryLog + report.lineSequence().toList()
+                diagnosticLogs = (discoveryLog + report.lineSequence().toList())
+                    .map { SecretRedactor.redact(it) }
                 val health = apiClient.health(targetIp)
                 status = health.fold(
                     onSuccess = { isReady ->
@@ -747,13 +758,15 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
 
     fun getDiagnosticsText(): String {
         val dateStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
-        return buildString {
+        // Che bí mật ở bản xuất cuối cùng: người dùng hay copy nguyên
+        // khối này gửi đi chẩn đoán, không được để lọt token/mật khẩu.
+        return SecretRedactor.redact(buildString {
             append("=== MUSE R1 DIAGNOSTICS ($dateStr) ===\n")
             append("Speaker: $speakerIp\n")
             append("Status: $status\n")
             append("------------------------------------------\n")
             diagnosticLogs.forEach { append(it).append('\n') }
-        }
+        })
     }
 
     @SuppressLint("MissingPermission")
@@ -792,6 +805,10 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
 
         viewModelScope.launch {
             state = ProvisioningState.Provisioning
+            // Mốc thời gian bắt đầu lần thử này: dùng để nhận ra bản ghi
+            // wifi_provision MỚI của loa khi thăm dò trạng thái (bản ghi
+            // cũ của lần thử trước không được tính là kết quả lần này).
+            val attemptStartedAt = System.currentTimeMillis()
 
             // Ép Android ưu tiên định tuyến gói tin qua Wi-Fi (bỏ qua 4G/5G khi Wi-Fi loa không có Internet)
             val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -831,7 +848,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                 if (httpResult.isSuccess) {
                     status = "R1 đã nhận cấu hình Wi‑Fi! Đang đợi R1 kết nối vào mạng ${network.ssid}..."
                     unbindProcessNetwork()
-                    waitForR1OnHomeNetwork(targetSsid = network.ssid)
+                    waitForR1OnHomeNetwork(targetSsid = network.ssid, attemptStartedAt = attemptStartedAt)
                     return@launch
                 } else {
                     Log.w("Provisioning", "HTTP provision thất bại: ${httpResult.exceptionOrNull()?.message}, thử Bluetooth...")
@@ -851,30 +868,64 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
             val deviceName = device.name ?: "Muse R1"
             status = "Đang gửi Wi‑Fi tới $deviceName qua Bluetooth..."
 
-            bluetoothProvisioner.provisionWifi(
-                device = device,
-                ssid = network.ssid,
-                password = password,
-                // Loa đã cấu hình Muse sẽ từ chối SPP không có token (kênh SPP
-                // giờ cũng kiểm tra provision token như HTTP :8080).
-                token = authToken()
-            ).fold(
+            // Thử Bluetooth tối đa 2 lần, và CHỈ thử lại khi lỗi là lỗi
+            // đường truyền (socket đóng, quá hạn, RFCOMM chập chờn). Loa
+            // đã trả mã nghiệp vụ (ERROR: CONNECT_TIMEOUT...) thì thử lại
+            // y hệt chỉ tốn thêm một phút vô ích — dừng ngay với mã đó.
+            var sppResult: Result<String?>? = null
+            var sppAttempts = 0
+            while (sppAttempts < 2) {
+                sppAttempts++
+                val attempt = bluetoothProvisioner.provisionWifi(
+                    device = device,
+                    ssid = network.ssid,
+                    password = password,
+                    // Loa đã cấu hình Muse sẽ từ chối SPP không có token (kênh SPP
+                    // giờ cũng kiểm tra provision token như HTTP :8080).
+                    token = authToken(),
+                    onSaved = {
+                        status = "Loa đã lưu cấu hình Wi‑Fi — đang chờ loa kết nối vào ${network.ssid}..."
+                    }
+                )
+                if (attempt.isSuccess) {
+                    sppResult = attempt
+                    break
+                }
+                val agentCode = ProvisioningHelp.extractCode(attempt.exceptionOrNull()?.message)
+                if (agentCode != null || sppAttempts >= 2) {
+                    sppResult = attempt
+                    break
+                }
+                status = "Bluetooth chập chờn — đang thử lại lần 2/2..."
+                delay(2_000)
+            }
+
+            sppResult!!.fold(
                 onSuccess = { ip ->
                     unbindProcessNetwork()
                     if (!ip.isNullOrBlank()) {
                         currentSpeakerIp = ip
                         status = "R1 đã kết nối Wi‑Fi nhà tại $ip! Đang kiểm tra kết nối..."
-                        waitForR1OnHomeNetwork(knownIp = ip, targetSsid = network.ssid)
+                        waitForR1OnHomeNetwork(knownIp = ip, targetSsid = network.ssid, attemptStartedAt = attemptStartedAt)
                     } else {
                         status = "Đã nhận xác nhận Bluetooth từ R1. Đang xác minh trên Wi‑Fi nhà..."
-                        waitForR1OnHomeNetwork(targetSsid = network.ssid)
+                        waitForR1OnHomeNetwork(targetSsid = network.ssid, attemptStartedAt = attemptStartedAt)
                     }
                 },
                 onFailure = { error ->
-                    state = ProvisioningState.Failure(
-                        "Gửi cấu hình qua Bluetooth thất bại (${error.message ?: "ngắt kết nối"}). Vui lòng kết nối Wi‑Fi điện thoại vào trạm phát của loa (Phicomm_R1_xxx) để truyền trực tiếp qua Wi‑Fi.",
-                        code = "BLUETOOTH_FAILED"
-                    )
+                    val agentCode = ProvisioningHelp.extractCode(error.message)
+                    state = if (agentCode != null) {
+                        ProvisioningState.Failure(
+                            "Loa từ chối cấu hình Wi-Fi qua Bluetooth. " + ProvisioningHelp.describe(agentCode),
+                            code = agentCode
+                        )
+                    } else {
+                        ProvisioningState.Failure(
+                            "Gửi cấu hình qua Bluetooth thất bại (${error.message ?: "ngắt kết nối"}). " +
+                                (ProvisioningHelp.helpFor("BLUETOOTH_FAILED") ?: ""),
+                            code = "BLUETOOTH_FAILED"
+                        )
+                    }
                 }
             )
             unbindProcessNetwork()
@@ -891,10 +942,35 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         return cleaned.takeIf { it.isNotEmpty() && it != "<unknown ssid>" }
     }
 
+    /**
+     * Hỏi trạng thái loa ở các địa chỉ có thể còn tới được (hotspot của
+     * loa nếu nó đã tự khôi phục sau thất bại, IP đang đặt) và trả bản
+     * ghi wifi_provision nếu đó là bản ghi của LẦN THỬ NÀY: SSID khớp
+     * mạng đích và mốc thời gian không cũ hơn lần thử (nới 5 phút cho
+     * lệch đồng hồ giữa điện thoại và loa).
+     */
+    private suspend fun probeSpeakerProvisionRecord(
+        targetSsid: String?,
+        attemptStartedAt: Long
+    ): JSONObject? {
+        for (ip in listOf("192.168.43.1", speakerIp.trim()).filter { it.isNotEmpty() }.distinct()) {
+            val res = apiClient.status(ip, authToken()).getOrNull() ?: continue
+            val record = res.optJSONObject("wifi_provision") ?: continue
+            if (record.length() == 0) continue
+            val recordSsid = record.optString("ssid", "")
+            if (targetSsid != null && recordSsid.isNotEmpty() && recordSsid != targetSsid) continue
+            val atMs = record.optLong("at_ms", 0L)
+            if (atMs in 1 until attemptStartedAt - 300_000L) continue
+            return record
+        }
+        return null
+    }
+
     private suspend fun waitForR1OnHomeNetwork(
         bluetoothError: String? = null,
         knownIp: String? = null,
-        targetSsid: String? = null
+        targetSsid: String? = null,
+        attemptStartedAt: Long = 0L
     ) {
         state = ProvisioningState.WaitingForR1
         val netName = targetSsid ?: selectedNetwork?.ssid ?: "Wi‑Fi nhà"
@@ -916,7 +992,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
             }
         }
 
-        repeat(24) {
+        repeat(24) { iteration ->
             delay(5000)
             // Cho người dùng thấy ĐIỆN THOẠI đang ở mạng nào: nguyên nhân
             // kẹt ở bước chờ này rất hay gặp là điện thoại chưa về đúng
@@ -933,6 +1009,38 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                         "⚠ Điện thoại đang ở mạng '$phoneSsid' — hãy chuyển Wi‑Fi điện thoại sang '$targetSsid' để tìm thấy loa."
                 }
             }
+            // Mỗi ~15 giây, hỏi thẳng trạng thái loa (nếu còn tới được):
+            // loa nối hỏng thường tự khôi phục hotspot, và khi đó bản ghi
+            // wifi_provision cho biết MÃ LỖI THẬT — fail-fast tại đây thay
+            // vì chờ mù đủ 2 phút mới báo một câu chung chung.
+            if (attemptStartedAt > 0 && iteration % 3 == 2) {
+                val record = probeSpeakerProvisionRecord(targetSsid, attemptStartedAt)
+                if (record != null) {
+                    when (record.optString("phase", "")) {
+                        "failed" -> {
+                            val code = record.optString("code", "EXCEPTION")
+                            state = ProvisioningState.Failure(
+                                "Loa báo cấu hình Wi-Fi thất bại. " + ProvisioningHelp.describe(code),
+                                code = code
+                            )
+                            status = "Loa đã dừng thử và báo mã $code."
+                            return
+                        }
+                        "connected" -> {
+                            val ip = record.optString("ip", "")
+                            if (ip.isNotEmpty() && !ip.startsWith("192.168.43.")) {
+                                currentSpeakerIp = ip
+                                state = ProvisioningState.Success(ip)
+                                status = "Đã xác minh R1 trên Wi‑Fi nhà: $ip (theo trạng thái loa báo)"
+                                return
+                            }
+                        }
+                        "saved" -> {
+                            status = "Loa đã lưu cấu hình — đang chờ kết nối vào $netName..."
+                        }
+                    }
+                }
+            }
             val discovered = discoveryClient.discover()
             if (discovered != null && !discovered.ipAddress.startsWith("192.168.43.")) {
                 state = ProvisioningState.Success(discovered.ipAddress)
@@ -943,7 +1051,8 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
 
         state = ProvisioningState.Failure(
             message = if (bluetoothError == null) {
-                "Không tìm thấy R1 trên Wi‑Fi nhà sau 2 phút. Hãy kiểm tra mật khẩu và đảm bảo điện thoại đã kết nối vào cùng mạng Wi‑Fi nhà."
+                "Không tìm thấy R1 trên Wi‑Fi nhà sau 2 phút. " +
+                    (ProvisioningHelp.helpFor("DISCOVERY_TIMEOUT") ?: "")
             } else {
                 "Loa chưa kết nối được Wi‑Fi nhà ($bluetoothError). Hãy đảm bảo mật khẩu đúng và điện thoại đang kết nối Wi‑Fi nhà."
             },

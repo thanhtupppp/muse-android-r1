@@ -18,8 +18,23 @@ object WifiProvisioner {
     private val lock = Any()
 
     sealed class ProvisionResult {
-        data class Success(val ip: String) : ProvisionResult()
-        data class Failure(val code: String, val apTouched: Boolean = false) : ProvisionResult()
+        /** Cấu hình Wi-Fi có còn được lưu trên loa sau lần thử này không. */
+        abstract val configSaved: Boolean
+
+        data class Success(val ip: String, override val configSaved: Boolean = true) : ProvisionResult()
+        data class Failure(
+            val code: String,
+            val apTouched: Boolean = false,
+            override val configSaved: Boolean = false
+        ) : ProvisionResult()
+    }
+
+    /** Các pha provisioning dùng chung mọi đường truyền (HTTP/SPP/BLE/ADB). */
+    object Phase {
+        const val CONNECTING = "connecting"
+        const val SAVED = "saved"
+        const val CONNECTED = "connected"
+        const val FAILED = "failed"
     }
 
     private fun isValidPassword(p: String): Boolean =
@@ -37,15 +52,31 @@ object WifiProvisioner {
         return "\"$escaped\""
     }
 
-    fun connect(context: Context, ssid: String, password: String): ProvisionResult =
+    /**
+     * Kết nối Wi-Fi chính của provisioning. [via] ghi rõ đường truyền
+     * ("http" | "spp" | "ble" | "adb") vào bản ghi trạng thái; [onStage]
+     * được gọi theo pha (connecting → saved → connected/failed) để đường
+     * truyền nào có kênh trực tiếp (SPP, BLE) báo tiến độ ngay cho app
+     * thay vì để app chờ mù — tương đương ACK từng bước của các giao
+     * thức companion khác, đặc biệt pha `saved` là mốc "loa đã lưu cấu
+     * hình" tách khỏi mốc "đã kết nối".
+     */
+    fun connect(
+        context: Context,
+        ssid: String,
+        password: String,
+        via: String = "app",
+        onStage: ((phase: String) -> Unit)? = null
+    ): ProvisionResult =
         synchronized(lock) {
             val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
                 ?: return ProvisionResult.Failure("NO_WIFI_MANAGER")
-            val result = connectAndWait(manager, ssid, password)
+            writeProvisionRecord(context, ssid, via, Phase.CONNECTING, result = null, action = null)
+            val result = connectAndWait(manager, ssid, password, onStage)
             if (result is ProvisionResult.Failure && result.apTouched) {
                 restoreAp(manager)
             }
-            recordOutcome(context, ssid, result, action = null)
+            recordOutcome(context, ssid, result, action = null, via = via)
             result
         }
 
@@ -54,33 +85,66 @@ object WifiProvisioner {
      * mục quản lý mạng đã lưu trong Mobile. Thất bại thì cố quay về mạng
      * trước đó để loa không mất kết nối oan.
      */
-    fun switchToSaved(context: Context, ssid: String): ProvisionResult =
+    fun switchToSaved(context: Context, ssid: String, via: String = "http"): ProvisionResult =
         synchronized(lock) {
             val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
                 ?: return ProvisionResult.Failure("NO_WIFI_MANAGER")
-            val result = switchAndWait(manager, ssid.trimEnd('\r', '\n').trim())
-            recordOutcome(context, ssid, result, action = "wifi_use")
+            val raw = switchAndWait(manager, ssid.trimEnd('\r', '\n').trim())
+            // Chuyển mạng không thay đổi tập cấu hình đã lưu: kể cả khi
+            // chuyển thất bại, cấu hình vẫn còn nguyên trên loa.
+            val result = when (raw) {
+                is ProvisionResult.Failure -> raw.copy(configSaved = true)
+                is ProvisionResult.Success -> raw
+            }
+            recordOutcome(context, ssid, result, action = "wifi_use", via = via)
             result
         }
 
-    // Ghi lại kết quả để chẩn đoán từ xa: đường HTTP trả 200 ngay khi
-    // mới LÊN LỊCH kết nối nên app không bao giờ thấy mã lỗi thật
-    // (CONNECT_TIMEOUT, SWITCH_TIMEOUT...) — trước đây chúng chỉ tồn tại
-    // trong logcat của loa. /status mục wifi_provision.
+    // Ghi trạng thái provisioning để chẩn đoán từ xa: đường HTTP trả 200
+    // ngay khi mới LÊN LỊCH kết nối nên app không bao giờ thấy mã lỗi
+    // thật (CONNECT_TIMEOUT, SWITCH_TIMEOUT...) — trước đây chúng chỉ
+    // tồn tại trong logcat của loa. /status mục wifi_provision, nay kèm
+    // phase + via + config_saved để app phân biệt "đang nối / đã lưu /
+    // đã nối / đã hỏng vì mã X".
     private fun recordOutcome(
         context: Context,
         ssid: String,
         result: ProvisionResult,
+        action: String?,
+        via: String
+    ) {
+        val phase = when (result) {
+            is ProvisionResult.Success -> Phase.CONNECTED
+            is ProvisionResult.Failure -> Phase.FAILED
+        }
+        writeProvisionRecord(context, ssid, via, phase, result, action)
+    }
+
+    private fun writeProvisionRecord(
+        context: Context,
+        ssid: String,
+        via: String,
+        phase: String,
+        result: ProvisionResult?,
         action: String?
     ) {
         runCatching {
             val record = org.json.JSONObject()
                 .put("ssid", ssid.trimEnd('\r', '\n'))
                 .put("at_ms", System.currentTimeMillis())
+                .put("phase", phase)
+                .put("via", via)
             if (action != null) record.put("action", action)
             when (result) {
-                is ProvisionResult.Success -> record.put("ok", true).put("ip", result.ip)
-                is ProvisionResult.Failure -> record.put("ok", false).put("code", result.code)
+                is ProvisionResult.Success -> record
+                    .put("ok", true)
+                    .put("ip", result.ip)
+                    .put("config_saved", result.configSaved)
+                is ProvisionResult.Failure -> record
+                    .put("ok", false)
+                    .put("code", result.code)
+                    .put("config_saved", result.configSaved)
+                null -> record.put("ok", false)
             }
             MusePreferences.setLastWifiProvision(context, record.toString())
         }
@@ -139,7 +203,7 @@ object WifiProvisioner {
 
     fun connect(wifiManager: WifiManager, ssid: String, password: String): ProvisionResult =
         synchronized(lock) {
-            val result = connectAndWait(wifiManager, ssid, password)
+            val result = connectAndWait(wifiManager, ssid, password, onStage = null)
             if (result is ProvisionResult.Failure && result.apTouched) {
                 restoreAp(wifiManager)
             }
@@ -150,10 +214,12 @@ object WifiProvisioner {
     private fun connectAndWait(
         wifiManager: WifiManager,
         ssid: String,
-        password: String
+        password: String,
+        onStage: ((phase: String) -> Unit)?
     ): ProvisionResult {
         val cleanSsid = ssid.trimEnd('\r', '\n')
         Log.i(TAG, "Wi-Fi provisioning requested for SSID='$cleanSsid' (password length=${password.length})")
+        onStage?.invoke(Phase.CONNECTING)
 
         if (cleanSsid.isEmpty()) {
             return ProvisionResult.Failure("EMPTY_SSID")
@@ -253,6 +319,10 @@ object WifiProvisioner {
             }
 
             wifiManager.saveConfiguration()
+            // Mốc "đã lưu cấu hình" — tách khỏi mốc "đã kết nối": từ đây
+            // cấu hình đã nằm bền trên loa kể cả khi bước nối sau đó hỏng
+            // (trừ nhánh dọn dẹp bên dưới khi cấu hình không bị gộp).
+            onStage?.invoke(Phase.SAVED)
             wifiManager.reconnect()
 
             val ip = waitForConnection(wifiManager, cleanSsid)
@@ -262,6 +332,7 @@ object WifiProvisioner {
                     wifiManager.removeNetwork(existingId)
                     wifiManager.saveConfiguration()
                 }
+                onStage?.invoke(Phase.CONNECTED)
                 ProvisionResult.Success(ip)
             } else {
                 Log.w(TAG, "Kết nối thất bại, dọn dẹp networkId=$networkId và giữ lại cấu hình cũ")
@@ -269,7 +340,13 @@ object WifiProvisioner {
                     wifiManager.removeNetwork(networkId)
                     wifiManager.saveConfiguration()
                 }
-                ProvisionResult.Failure("CONNECT_TIMEOUT", apWasDisabledByUs)
+                // Bị gộp vào cấu hình cũ thì cấu hình (sai) vẫn còn lưu;
+                // không bị gộp thì đã dọn sạch ở trên.
+                ProvisionResult.Failure(
+                    "CONNECT_TIMEOUT",
+                    apWasDisabledByUs,
+                    configSaved = mergedWithExisting
+                )
             }
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()

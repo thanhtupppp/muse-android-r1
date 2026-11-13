@@ -182,7 +182,7 @@ class LocalProvisionServer(
             executor.schedule(
                 {
                     try {
-                        WifiProvisioner.connect(context, ssid, password)
+                        WifiProvisioner.connect(context, ssid, password, via = "http")
                     } catch (e: Exception) {
                         Log.e(TAG, "Delayed Wi-Fi provisioning failed", e)
                     } finally {
@@ -381,7 +381,7 @@ class LocalProvisionServer(
         executor.schedule(
             {
                 try {
-                    WifiProvisioner.switchToSaved(context, ssid)
+                    WifiProvisioner.switchToSaved(context, ssid, via = "http")
                 } catch (e: Exception) {
                     Log.e(TAG, "Chuyển mạng Wi-Fi đã lên lịch thất bại", e)
                 } finally {
@@ -597,7 +597,7 @@ class LocalProvisionServer(
             )
         } catch (error: Exception) {
             Log.e(TAG, "Error configuring Muse token", error)
-            badRequest("INVALID_REQUEST: ${error.message}")
+            badRequest("INVALID_REQUEST: ${SecretRedactor.redact(error.message ?: "")}")
         }
     }
 
@@ -623,7 +623,7 @@ class LocalProvisionServer(
             json(response = JSONObject(result))
         } catch (error: Exception) {
             Log.e(TAG, "Error executing command", error)
-            badRequest("INVALID_REQUEST: ${error.message}")
+            badRequest("INVALID_REQUEST: ${SecretRedactor.redact(error.message ?: "")}")
         }
     }
 

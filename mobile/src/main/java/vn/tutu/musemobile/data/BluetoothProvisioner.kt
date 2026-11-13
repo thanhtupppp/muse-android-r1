@@ -102,7 +102,8 @@ class BluetoothProvisioner(private val context: Context) {
         device: BluetoothDevice,
         ssid: String,
         password: String,
-        token: String? = null
+        token: String? = null,
+        onSaved: (() -> Unit)? = null
     ): Result<String?> = withContext(Dispatchers.IO) {
         runCatching {
             require(ssid.isNotBlank()) { "SSID không được để trống" }
@@ -120,10 +121,10 @@ class BluetoothProvisioner(private val context: Context) {
             // Trước đây thứ tự ngược lại nên mật khẩu Wi-Fi có thể đi qua
             // liên kết không xác thực dù cả hai đầu đều hỗ trợ secure.
             try {
-                provisionViaSocket(device, secure = true, ssid, password, token)
+                provisionViaSocket(device, secure = true, ssid, password, token, onSaved)
             } catch (secureError: Exception) {
                 Log.w(TAG, "Secure RFCOMM thất bại (${secureError.message}); thử insecure RFCOMM", secureError)
-                provisionViaSocket(device, secure = false, ssid, password, token)
+                provisionViaSocket(device, secure = false, ssid, password, token, onSaved)
             }
         }
     }
@@ -133,7 +134,8 @@ class BluetoothProvisioner(private val context: Context) {
         secure: Boolean,
         ssid: String,
         password: String,
-        token: String?
+        token: String?,
+        onSaved: (() -> Unit)? = null
     ): String? {
         val socket = if (secure) {
             device.createRfcommSocketToServiceRecord(MUSE_R1_SPP_UUID)
@@ -153,7 +155,7 @@ class BluetoothProvisioner(private val context: Context) {
 
             try {
                 return withTimeout(RESPONSE_TIMEOUT_MS) {
-                    readResponse(socket)
+                    readResponse(socket, onSaved)
                 }
             } catch (e: TimeoutCancellationException) {
                 throw IOException("Quá hạn chờ R1 xác nhận kết nối Wi-Fi (${RESPONSE_TIMEOUT_MS / 1000}s)", e)
@@ -186,9 +188,29 @@ class BluetoothProvisioner(private val context: Context) {
         }
     }
 
-    // Server replies with one newline-terminated OK (optionally with ip=...) or ERROR line.
-    private fun readResponse(socket: BluetoothSocket): String? {
+    // Server có thể gửi dòng tiến độ "SAVED" (loa đã lưu cấu hình) trước
+    // dòng kết quả cuối: OK (kèm ip=...) hoặc ERROR. Các dòng tiến độ
+    // được bỏ qua ở đây sau khi báo qua onSaved; Agent cũ không gửi
+    // SAVED nên hành vi với bản cũ không đổi.
+    private fun readResponse(socket: BluetoothSocket, onSaved: (() -> Unit)? = null): String? {
         val input = socket.inputStream
+        while (true) {
+            val line = readLine(input)
+            when {
+                line.equals("SAVED", ignoreCase = true) -> onSaved?.invoke()
+                line.startsWith("OK", ignoreCase = true) -> {
+                    val ipMatch = Regex("ip=([0-9.]+)").find(line)
+                    return ipMatch?.groupValues?.get(1)
+                }
+                line.startsWith("ERROR:", ignoreCase = true) ->
+                    throw IOException("R1 từ chối cấu hình Wi-Fi: $line")
+                else ->
+                    throw IOException("Phản hồi Bluetooth không hợp lệ từ R1: ${line.ifEmpty { "<trống>" }}")
+            }
+        }
+    }
+
+    private fun readLine(input: java.io.InputStream): String {
         val response = ByteArrayOutputStream()
         while (response.size() < MAX_RESPONSE_BYTES) {
             val next = input.read()
@@ -197,12 +219,6 @@ class BluetoothProvisioner(private val context: Context) {
             if (next != 13) response.write(next)
         }
         if (response.size() >= MAX_RESPONSE_BYTES) throw IOException("Phản hồi Bluetooth từ R1 vượt giới hạn")
-        val line = response.toByteArray().toString(Charsets.UTF_8).trim()
-        if (line.startsWith("OK", ignoreCase = true)) {
-            val ipMatch = Regex("ip=([0-9.]+)").find(line)
-            return ipMatch?.groupValues?.get(1)
-        }
-        if (line.startsWith("ERROR:", ignoreCase = true)) throw IOException("R1 từ chối cấu hình Wi-Fi: $line")
-        throw IOException("Phản hồi Bluetooth không hợp lệ từ R1: ${line.ifEmpty { "<trống>" }}")
+        return response.toByteArray().toString(Charsets.UTF_8).trim()
     }
 }

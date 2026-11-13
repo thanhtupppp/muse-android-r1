@@ -38,7 +38,15 @@ R1 dùng API 22, nên Agent sử dụng `WifiConfiguration` và `WifiManager`. K
 
 ## Giao thức Bluetooth
 
-Mobile gửi các dòng `MUSE_WIFI_CONFIG`, `ssid=...`, `password=...`, `security=WPA2`, kết thúc bằng `END`. Agent trả một dòng `OK` hoặc `ERROR: ...`. Mobile chỉ báo thành công khi nhận chính xác `OK`; EOF hoặc phản hồi rỗng là lỗi.
+Mobile gửi các dòng `MUSE_WIFI_CONFIG`, `ssid=...`, `password=...`, `security=WPA2`, kết thúc bằng `END`. Agent có thể gửi dòng tiến độ `SAVED` (loa đã lưu cấu hình) trước dòng kết quả cuối `OK`/`ERROR: ...`. Mobile chỉ báo thành công khi nhận chính xác `OK`; EOF hoặc phản hồi rỗng là lỗi. Lỗi đường truyền Bluetooth được thử lại tối đa 1 lần; loa đã trả mã nghiệp vụ (`ERROR: <CODE>`) thì không thử lại.
+
+## Trạng thái provisioning dùng chung
+
+Mọi đường truyền (HTTP, SPP, BLE, ADB) dùng cùng một bộ pha trong `WifiProvisioner`: `connecting → saved → connected`, hoặc `failed` kèm mã lỗi. Pha `saved` là mốc cấu hình đã được ghi bền trên loa (tách khỏi mốc đã kết nối): SPP báo bằng dòng `SAVED`, BLE bằng trạng thái `wifi_saved`, HTTP qua bản ghi dưới đây.
+
+Bản ghi lần thử gần nhất nằm ở `GET /status` → `wifi_provision`: `{ssid, at_ms, phase, via (http|spp|ble|adb|wifi_use…), ok, ip | code, config_saved}`. Mobile thăm dò bản ghi này trong lúc chờ loa lên mạng nhà: gặp `phase: "failed"` của đúng lần thử là dừng chờ ngay và hiển thị mã lỗi kèm hướng dẫn (`ProvisioningHelp` phía Mobile ánh xạ từng mã → câu hướng dẫn tiếng Việt), gặp `connected` thì lấy luôn IP loa báo.
+
+Log và thông báo lỗi hai phía đều đi qua `SecretRedactor` (che password/token/secret/api-key/authorization, Bearer và token `mgst_...`) trước khi hiển thị hoặc copy ra ngoài.
 
 ## Quét Wi-Fi từ loa và quản lý mạng đã lưu (HTTP :8080)
 
