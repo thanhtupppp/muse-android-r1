@@ -27,7 +27,8 @@ UDP discovery :47808 xác nhận R1 xuất hiện lại
 ## Kênh kết nối
 
 - **ADB TCP 5555:** cài Agent APK. Mobile kiểm tra shell, file APK, kết quả cài đặt và trạng thái AgentService.
-- **HTTP :8080:** kênh provisioning chính khi điện thoại đang ở hotspot của loa. Agent cung cấp GET `/health`, GET `/status`, POST `/provision-wifi`, POST `/configure-muse` và POST `/command`. Xác thực bằng provision token (header `x-muse-token`): loa chưa cấu hình Muse thì mở; đã cấu hình thì bắt buộc token, trừ cửa sổ 10 phút sau khi Agent khởi động/mở lại cửa sổ pairing. Mobile nhận token từ response cấu hình Muse và tự đính kèm sau đó.
+- **HTTP :8080:** kênh provisioning chính khi điện thoại đang ở hotspot của loa. Agent cung cấp GET `/health`, GET `/status`, POST `/provision-wifi`, POST `/configure-muse`, POST `/open-pairing-window` và POST `/command`. Xác thực bằng provision token (header `x-muse-token`): loa chưa cấu hình Muse thì mở; đã cấu hình thì bắt buộc token, trừ cửa sổ 10 phút sau khi Agent khởi động/mở lại cửa sổ pairing. Mobile nhận token từ response cấu hình Muse (hoặc response mở pairing) và tự đính kèm sau đó.
+- **Muse BLE pairing:** trong tab Muse AI của Mobile, nút **Mở chế độ ghép nối trên loa** gọi `POST /open-pairing-window`. Agent ép BLE server phát nhanh `MuseGadget-xxxxxx` trong 10 phút và Mobile chỉ báo sẵn sàng sau khi `/status` xác nhận `bluetooth.server.advertising=true`. Sau đó người dùng pair trong app Muse chính thức qua Settings → Devices → Developer mode → Add Device.
 - **Bluetooth SPP:** kênh dự phòng khi HTTP không tới được. UUID: `00001101-0000-1000-8000-00805F9B34FB`. Mobile thử secure RFCOMM trước, insecure sau; loa đã cấu hình cũng kiểm tra provision token trong payload SPP.
 - **UDP 47808:** discovery sau khi loa chuyển sang Wi-Fi nhà. Phản hồi chỉ chứa tên dịch vụ, phiên bản Agent và cờ đã cấu hình Muse — không chứa device_id hay SSID.
 

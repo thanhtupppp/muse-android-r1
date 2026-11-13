@@ -122,6 +122,20 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     var musePairStatus by mutableStateOf("")
         private set
 
+    var isOpeningMusePairing by mutableStateOf(false)
+        private set
+
+    var musePairingModeStatus by mutableStateOf("")
+        private set
+
+    /** Tên BLE loa đang dùng (MuseGadget-xxxxxx), đọc từ /status. */
+    var museBleName by mutableStateOf("")
+        private set
+
+    /** Số giây còn lại của cửa sổ pairing phát nhanh, đọc từ /status. */
+    var musePairingWindowRemainingSec by mutableStateOf(0)
+        private set
+
     var isMusePaired by mutableStateOf(false)
         private set
 
@@ -301,6 +315,86 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    private fun updateBlePairingStatus(server: JSONObject?) {
+        if (server == null) return
+        val bleName = server.optString("ble_name", "").trim()
+        if (bleName.isNotEmpty()) {
+            museBleName = bleName
+        }
+        musePairingWindowRemainingSec =
+            server.optInt("pairing_window_remaining_sec", musePairingWindowRemainingSec)
+    }
+
+    /**
+     * Bấm để ép loa mở sẵn chế độ ghép nối cho app Muse chính thức: loa
+     * phát nhanh BLE trong 10 phút. Hàm chỉ báo thành công khi /status xác
+     * nhận advertising đã bật (không dừng ở mức "đã gửi lệnh"), vì khác biệt
+     * đó chính là chỗ người dùng dễ tưởng loa đã sẵn sàng trong khi BLE còn
+     * chưa lên.
+     */
+    fun openMusePairingMode(ip: String? = null) {
+        val targetIp = (ip ?: speakerIp).trim()
+        if (targetIp.isEmpty()) {
+            musePairingModeStatus = "❌ Chưa có địa chỉ IP của loa."
+            return
+        }
+
+        viewModelScope.launch {
+            isOpeningMusePairing = true
+            musePairingModeStatus = "Đang yêu cầu R1 bật BLE ghép nối..."
+            apiClient.openPairingWindow(speakerIp = targetIp, token = authToken()).fold(
+                onSuccess = { res ->
+                    captureProvisionToken(res)
+                    var server = res.optJSONObject("bluetooth")?.optJSONObject("server")
+                    updateBlePairingStatus(server)
+
+                    var advertising = server?.optBoolean("advertising", false) == true
+                    var startError = server?.optString("last_start_error", "").orEmpty()
+                    if (!advertising && startError.isEmpty()) {
+                        musePairingModeStatus = "⏳ Loa đã nhận lệnh, đang chờ BLE phát sóng..."
+                        for (attempt in 1..8) {
+                            delay(1000)
+                            val latestStatus = apiClient.status(
+                                speakerIp = targetIp,
+                                token = authToken()
+                            ).getOrNull() ?: continue
+                            server = latestStatus.optJSONObject("bluetooth")
+                                ?.optJSONObject("server")
+                            updateBlePairingStatus(server)
+                            advertising = server?.optBoolean("advertising", false) == true
+                            startError = server?.optString("last_start_error", "").orEmpty()
+                            if (advertising || startError.isNotEmpty()) break
+                        }
+                    }
+
+                    musePairingModeStatus = when {
+                        advertising -> {
+                            val displayName = museBleName.ifEmpty { "MuseGadget-xxxxxx" }
+                            val minutes = if (musePairingWindowRemainingSec > 0) {
+                                (musePairingWindowRemainingSec + 59) / 60
+                            } else {
+                                res.optInt("pairing_window_minutes", 10)
+                            }
+                            "✅ Loa đang phát BLE '$displayName' và chờ ghép nối trong khoảng $minutes phút. " +
+                                "Mở app Muse → Cài đặt → Thiết bị → Chế độ nhà phát triển → Thêm thiết bị."
+                        }
+                        startError.isNotEmpty() ->
+                            "❌ Loa chưa bật được BLE: $startError"
+                        else ->
+                            "⏳ Loa đã nhận lệnh mở ghép nối nhưng chưa xác nhận được BLE đang phát. " +
+                                "Chờ vài giây rồi thử Thêm thiết bị trong app Muse; nếu chưa thấy loa, bấm nút này lại."
+                    }
+                },
+                onFailure = { err ->
+                    musePairingModeStatus =
+                        "❌ Không mở được chế độ ghép nối: ${err.message}. " +
+                            "Hãy bảo đảm điện thoại đang ở hotspot của loa hoặc cùng Wi-Fi với loa, và địa chỉ IP loa đúng."
+                }
+            )
+            isOpeningMusePairing = false
+        }
+    }
+
     fun checkMuseStatus(ip: String? = null) {
         val targetIp = (ip ?: speakerIp).trim()
         viewModelScope.launch {
@@ -317,6 +411,9 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                     val net = res.optString("network", "")
                     isMusePaired = paired
                     isMuseConnected = connected
+                    updateBlePairingStatus(
+                        res.optJSONObject("bluetooth")?.optJSONObject("server")
+                    )
                     activeVmId = res.optString("active_vm_id", "")
                     activeVmName = res.optString("active_vm_name", "")
                     activeNoiseHost = res.optString("active_noise_host", "")

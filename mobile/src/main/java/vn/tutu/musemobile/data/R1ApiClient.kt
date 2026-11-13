@@ -235,6 +235,40 @@ class R1ApiClient(private val context: Context? = null) {
         }
     }
 
+    /**
+     * Yêu cầu loa ép mở cửa sổ ghép nối BLE (phát nhanh 10 phút) để app
+     * Muse chính thức thấy loa trong Add Device.
+     */
+    suspend fun openPairingWindow(
+        speakerIp: String,
+        token: String? = null
+    ): Result<JSONObject> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanIp = speakerIp.trim()
+            require(isValidIpv4(cleanIp)) { "Địa chỉ IP không hợp lệ: $speakerIp" }
+
+            val reqBuilder = Request.Builder()
+                .url("http://$cleanIp:8080/open-pairing-window")
+                .post("{}".toRequestBody("application/json".toMediaType()))
+            if (!token.isNullOrEmpty()) {
+                reqBuilder.addHeader("x-muse-token", token)
+            }
+
+            getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
+                val rawBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    val sample = rawBody.take(500)
+                    throw IOException("R1 từ chối mở chế độ ghép nối: HTTP ${response.code} ${response.message}; body=$sample")
+                }
+                val json = JSONObject(rawBody)
+                if (!json.optBoolean("ok", false)) {
+                    throw IOException("R1 báo lỗi: ${json.optString("error", rawBody)}")
+                }
+                json
+            }
+        }
+    }
+
     private fun postConfigureMuse(
         speakerIp: String,
         payload: JSONObject,

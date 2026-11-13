@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -120,6 +121,62 @@ fun MusePairScreen(viewModel: ProvisioningViewModel) {
                 } else {
                     "Nhập Muse SDK Token (mgst_...) lấy từ gadgets.muse.ai để loa tự nhận VM."
                 },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        AppCard {
+            CardHeader(
+                icon = Icons.Filled.Bluetooth,
+                title = "Ghép nối qua app Muse chính thức",
+                subtitle = "Ép loa bật BLE và mở sẵn chờ Muse pair"
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = "Dùng đường này khi anh muốn pair bằng chính app Muse trên điện thoại. " +
+                    "Nhấn nút dưới đây: loa sẽ phát nhanh BLE trong 10 phút, kể cả khi cửa sổ ghép nối cũ đã đóng.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (viewModel.museBleName.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                StatusChip("BLE: ${viewModel.museBleName}", ChipKind.INFO)
+            }
+            Spacer(modifier = Modifier.height(14.dp))
+            LoadingButton(
+                text = "Mở chế độ ghép nối trên loa",
+                loadingText = "Đang bật BLE trên loa...",
+                loading = viewModel.isOpeningMusePairing,
+                icon = Icons.Filled.Bluetooth,
+                onClick = {
+                    viewModel.setSpeakerIp(speakerIp.trim())
+                    viewModel.openMusePairingMode(speakerIp.trim())
+                }
+            )
+            AnimatedVisibility(
+                visible = viewModel.musePairingModeStatus.isNotEmpty(),
+                enter = fadeIn() + expandVertically()
+            ) {
+                Column {
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = viewModel.musePairingModeStatus,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = when {
+                            viewModel.musePairingModeStatus.contains("✅") -> StatusColors.Success
+                            viewModel.musePairingModeStatus.contains("❌") ->
+                                MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.primary
+                        }
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = "Sau khi loa báo đã sẵn sàng: mở app Muse → Cài đặt → Thiết bị → " +
+                    "Chế độ nhà phát triển → Thêm thiết bị, rồi chọn loa trong danh sách.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

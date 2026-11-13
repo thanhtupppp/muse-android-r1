@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * GET  http://192.168.43.1:8080/health
  * GET  http://192.168.43.1:8080/status
  * POST http://192.168.43.1:8080/provision-wifi
+ * POST http://192.168.43.1:8080/open-pairing-window
  */
 class LocalProvisionServer(
     private val context: Context,
@@ -73,6 +74,7 @@ class LocalProvisionServer(
                 "/provision-wifi" -> provisionWifi(session)
                 "/configure-muse", "/pair" -> configureMuse(session)
                 "/unconfigure-muse" -> unconfigureMuse(session)
+                "/open-pairing-window", "/open-muse-pairing" -> openPairingWindow(session)
                 "/command" -> handleCommand(session)
                 else -> notFound()
             }
@@ -191,6 +193,76 @@ class LocalProvisionServer(
             Log.e(TAG, "Invalid provisioning request", error)
             badRequest("INVALID_REQUEST")
         }
+    }
+
+    /**
+     * Ép loa mở chế độ ghép nối BLE cho app Muse chính thức: phát nhanh
+     * MuseGadget-xxxxxx trong 10 phút và chờ central kết nối. Đây là đường
+     * từ nút bấm trong Muse Mobile; trước đây chỉ có đường ADB.
+     *
+     * Lệnh được chuyển qua AgentService (đường intent đã có) để việc bật
+     * BLE/GATT vẫn chạy đúng vòng đời service. Handler chờ tối đa 2,5 giây
+     * để phản hồi kèm trạng thái advertising thực tế thay vì chỉ nói "đã
+     * nhận lệnh" — nếu BLE còn đang khởi động, Mobile sẽ tự thăm dò tiếp
+     * qua /status.
+     */
+    private fun openPairingWindow(session: IHTTPSession): Response {
+        if (!isAuthorized(session)) {
+            return unauthorized()
+        }
+
+        AgentService.reopenPairingWindow(context)
+
+        var serverStatus = JSONObject()
+        val deadlineMs = System.currentTimeMillis() + PAIRING_STATUS_WAIT_MS
+        while (System.currentTimeMillis() <= deadlineMs) {
+            serverStatus = AgentService.currentBleServer?.statusJson() ?: JSONObject()
+            if (serverStatus.optBoolean("advertising", false)) break
+
+            val startError = serverStatus.optString("last_start_error", "")
+            if (startError.isNotEmpty() && !serverStatus.optBoolean("starting", false)) break
+
+            try {
+                Thread.sleep(PAIRING_STATUS_POLL_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                break
+            }
+        }
+
+        val advertising = serverStatus.optBoolean("advertising", false)
+        val starting = serverStatus.optBoolean("starting", false)
+        val startError = serverStatus.optString("last_start_error", "")
+        if (!advertising && !starting && startError.isNotEmpty()) {
+            Log.w(TAG, "Không mở được cửa sổ pairing BLE: $startError")
+            return badRequest("BLE_PAIRING_START_FAILED:$startError")
+        }
+
+        Log.i(
+            TAG,
+            "Đã yêu cầu mở cửa sổ pairing BLE từ Mobile " +
+                "(advertising=$advertising, starting=$starting)"
+        )
+        return json(
+            response = JSONObject()
+                .put("ok", true)
+                .put("pairing_window_requested", true)
+                .put("pairing_window_minutes", PAIRING_WINDOW_MINUTES)
+                .put("advertising", advertising)
+                .put("starting", starting)
+                .put("bluetooth", JSONObject().put("server", serverStatus))
+                // Mobile lưu token này để sau khi loa pair xong vẫn gọi
+                // được các endpoint :8080 mà không bị khoá ngoài.
+                .put("provision_token", MusePreferences.ensureProvisionToken(context))
+                .put(
+                    "message",
+                    if (advertising) {
+                        "Speaker is advertising for Muse pairing"
+                    } else {
+                        "Pairing window requested; BLE is starting"
+                    }
+                )
+        )
     }
 
     /**
@@ -461,5 +533,8 @@ class LocalProvisionServer(
         const val DEFAULT_PORT = 8080
         private const val SOCKET_READ_TIMEOUT = 5_000
         private const val MAX_CONTENT_LENGTH_BYTES = 16384L
+        private const val PAIRING_WINDOW_MINUTES = 10
+        private const val PAIRING_STATUS_WAIT_MS = 2_500L
+        private const val PAIRING_STATUS_POLL_MS = 200L
     }
 }

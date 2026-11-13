@@ -106,6 +106,10 @@ class MuseBleServer(
     @Volatile
     private var advertisingSuppressedByPolicy: Boolean = false
 
+    /** Mốc kết thúc cửa sổ pairing phát nhanh hiện tại (0 = không có cửa sổ). */
+    @Volatile
+    private var pairingWindowUntilMs: Long = 0L
+
     private val rxAssembler = MuseBleFramer.RxAssembler()
     private var pairingProtocol: MuseBlePairingProtocol? = null
     private var bleRxExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -114,6 +118,7 @@ class MuseBleServer(
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
             isAdvertising = true
+            lastStartError = null
             Log.i(TAG, "Muse BLE Advertising đã kích hoạt thành công (Service: $SERVICE_UUID)")
         }
 
@@ -545,6 +550,7 @@ class MuseBleServer(
                 AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY,
                 AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
             )
+            pairingWindowUntilMs = System.currentTimeMillis() + PAIRING_WINDOW_MS
             scheduleAdvertisingPolicy(generation)
         } catch (e: Exception) {
             lastStartError = "ADVERTISE_EXCEPTION:${e.javaClass.simpleName}"
@@ -558,6 +564,10 @@ class MuseBleServer(
         advertisingMode = mode
         advertisingTxPower = txPower
         advertisingSuppressedByPolicy = false
+        // Một lần phát mới bắt đầu: xoá lỗi của lần phát trước để /status và
+        // endpoint mở pairing không đọc nhầm lỗi cũ trong lúc callback mới
+        // chưa về.
+        lastStartError = null
         try {
             leAdvertiser.stopAdvertising(advertiseCallback)
         } catch (_: Exception) {}
@@ -638,6 +648,7 @@ class MuseBleServer(
                 AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY,
                 AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
             )
+            pairingWindowUntilMs = System.currentTimeMillis() + PAIRING_WINDOW_MS
             scheduleAdvertisingPolicy(startGeneration)
             Log.i(TAG, "Đã mở lại cửa sổ pairing BLE (phát nhanh ${PAIRING_WINDOW_MS / 60_000} phút)")
         } catch (e: Exception) {
@@ -653,10 +664,14 @@ class MuseBleServer(
         } catch (e: Exception) {
             null
         }
+        val pairingWindowRemainingMs =
+            (pairingWindowUntilMs - System.currentTimeMillis()).coerceAtLeast(0L)
         return JSONObject()
             .put("running", gattServer != null)
             .put("advertising", isAdvertising)
             .put("starting", isStarting)
+            .put("pairing_window_active", pairingWindowRemainingMs > 0L)
+            .put("pairing_window_remaining_sec", pairingWindowRemainingMs / 1000L)
             .put("last_start_error", lastStartError ?: "")
             .put("advertising_suppressed_by_policy", advertisingSuppressedByPolicy)
             .put("central_connected", connectedDevice != null)
@@ -709,12 +724,15 @@ class MuseBleServer(
     private fun applyAdvertisingPolicy(generation: Int) {
         if (generation != startGeneration || !isAdvertising) return
         if (connectedDevice != null) {
-            // Đang có central dùng dở phiên pair: hoãn quyết định.
+            // Đang có central dùng dở phiên pair: hoãn quyết định và giữ
+            // trạng thái cửa sổ pairing là đang mở cho tới lần kiểm tra sau.
+            pairingWindowUntilMs = System.currentTimeMillis() + POLICY_RECHECK_MS
             advPolicyFuture = ensureAdvScheduler().schedule({
                 applyAdvertisingPolicy(generation)
             }, POLICY_RECHECK_MS, TimeUnit.MILLISECONDS)
             return
         }
+        pairingWindowUntilMs = 0L
         val adv = advertiser ?: return
         val paired = try {
             MusePreferences.isMusePaired(context)
@@ -765,6 +783,7 @@ class MuseBleServer(
         serviceAddedLatch?.countDown()
         advPolicyFuture?.cancel(false)
         advPolicyFuture = null
+        pairingWindowUntilMs = 0L
         SpeakerButtonMonitor.disarm()
         SpeakerButtonMonitor.onArmedPress = null
 
