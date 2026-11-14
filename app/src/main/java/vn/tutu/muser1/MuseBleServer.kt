@@ -425,6 +425,12 @@ class MuseBleServer(
             macAddress = identity.mac,
             firmwareVersion = BuildConfig.VERSION_NAME,
             sdkToken = existingSdkToken,
+            // Đọc tươi tại thời điểm pairing_confirmed: token cập nhật qua
+            // /configure-muse sau khi server BLE đã khởi động vẫn phải tới
+            // được app Muse, không bị kẹt ở bản chụp lúc startInternal().
+            sdkTokenProvider = {
+                MusePreferences.getMuseToken(context).takeIf { it.startsWith("mgst_") }
+            },
             onWifiScan = { scanWifiNetworks() },
             onProvisionV2 = { req, sendStatus -> handleProvisionV2(req, sendStatus) },
             onConfirmRequired = {

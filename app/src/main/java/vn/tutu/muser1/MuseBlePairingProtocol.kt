@@ -383,6 +383,15 @@ class MuseBlePairingProtocol(
     macAddress: String,
     private val firmwareVersion: String,
     private val sdkToken: String? = null,
+    /**
+     * Đọc token SDK TẠI THỜI ĐIỂM XÁC NHẬN ghép nối, thay cho bản chụp
+     * [sdkToken] lúc khởi tạo. Server BLE sống lâu hơn cấu hình Muse:
+     * người dùng thường cập nhật token SAU khi Agent đã chạy, và bản cũ
+     * trình token chụp lúc khởi động server (thường là trống) khiến app
+     * Muse báo "tiện ích không có mã SDK" dù token hiện tại hợp lệ.
+     * SDK gốc cũng đọc token khi phiên pair bắt đầu, không phải lúc boot.
+     */
+    private val sdkTokenProvider: (() -> String?)? = null,
     private val random: SecureRandom = SecureRandom(),
     private val onWifiScan: () -> List<WifiEntry> = { emptyList() },
     private val onProvisionV2: (ProvisionV2Request, sendStatus: (String) -> Unit) -> Boolean = { _, _ -> true },
@@ -871,14 +880,16 @@ class MuseBlePairingProtocol(
         emitPairingConfirmed(emitJson)
     }
 
+    /** Token SDK hiệu lực tại thời điểm gọi: ưu tiên provider (đọc tươi). */
+    private fun currentSdkToken(): String? =
+        (sdkTokenProvider?.invoke() ?: sdkToken)?.takeIf { it.isNotBlank() }
+
     private fun emitPairingConfirmed(emitJson: (String) -> Unit) {
         val confirmed = linkedMapOf<String, Any?>(
             "type" to "status",
             "status" to "pairing_confirmed"
         )
-        if (!sdkToken.isNullOrBlank()) {
-            confirmed["sdk_token"] = sdkToken
-        }
+        currentSdkToken()?.let { confirmed["sdk_token"] = it }
         encryptEnvelope(TinyJson.encode(confirmed))?.let(emitJson)
     }
 
