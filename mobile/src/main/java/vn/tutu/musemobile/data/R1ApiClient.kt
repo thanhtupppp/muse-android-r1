@@ -304,6 +304,54 @@ class R1ApiClient(private val context: Context? = null) {
         }
     }
 
+    /**
+     * POST /voice-call/start: bắt đầu cuộc gọi voice Phase 1 trên loa
+     * (phiên Noise voice riêng). Cuộc gọi chạy nền phía loa; trạng thái
+     * đọc lại qua /status (block voice_call).
+     */
+    suspend fun startVoiceCall(
+        speakerIp: String,
+        token: String? = null
+    ): Result<JSONObject> = postVoiceCallAction(speakerIp, token, "/voice-call/start", "bắt đầu voice call")
+
+    /** POST /voice-call/stop: kết thúc cuộc gọi voice Phase 1 đang chạy. */
+    suspend fun stopVoiceCall(
+        speakerIp: String,
+        token: String? = null
+    ): Result<JSONObject> = postVoiceCallAction(speakerIp, token, "/voice-call/stop", "kết thúc voice call")
+
+    private suspend fun postVoiceCallAction(
+        speakerIp: String,
+        token: String?,
+        path: String,
+        label: String
+    ): Result<JSONObject> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanIp = speakerIp.trim()
+            require(isValidIpv4(cleanIp)) { "Địa chỉ IP không hợp lệ: $speakerIp" }
+
+            val reqBuilder = Request.Builder()
+                .url("http://$cleanIp:8080$path")
+                .post("{}".toRequestBody("application/json".toMediaType()))
+            if (!token.isNullOrEmpty()) {
+                reqBuilder.addHeader("x-muse-token", token)
+            }
+
+            getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
+                val rawBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    val sample = SecretRedactor.redact(rawBody.take(500))
+                    throw IOException("R1 từ chối $label: HTTP ${response.code} ${response.message}; body=$sample")
+                }
+                val json = JSONObject(rawBody)
+                if (!json.optBoolean("ok", false)) {
+                    throw IOException("R1 báo lỗi: ${json.optString("error", rawBody)}")
+                }
+                json
+            }
+        }
+    }
+
     /** GET JSON từ một endpoint :8080 của loa, kèm token khi có. */
     private fun getJson(speakerIp: String, path: String, token: String?, label: String): JSONObject {
         val cleanIp = speakerIp.trim()

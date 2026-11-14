@@ -156,6 +156,12 @@ class AgentService : Service() {
         if (intent?.action == ACTION_PROBE_VOICE_CALL) {
             runVoiceProbes()
         }
+        if (intent?.action == ACTION_VOICE_CALL_START) {
+            startVoiceCallInternal()
+        }
+        if (intent?.action == ACTION_VOICE_CALL_STOP) {
+            voiceCall?.stop("service_stop")
+        }
         maybeRunMicProbe()
         maybeRunLedProbe()
         startDiscoveryResponder()
@@ -235,11 +241,39 @@ class AgentService : Service() {
         }.start()
     }
 
+    /** Cuộc gọi voice Phase 1 đang sở hữu (nếu có). */
+    private var voiceCall: VoiceCall? = null
+
+    /**
+     * Bắt đầu cuộc gọi voice: phiên Noise voice RIÊNG lấy đích (VM +
+     * bearer) từ session adapter đang chạy; app id từ MusePreferences
+     * (mặc định hatch-web). Gọi khi đang có cuộc gọi dở là no-op.
+     */
+    private fun startVoiceCallInternal() {
+        val existing = voiceCall
+        if (existing != null && existing.currentStatus().active) {
+            Log.i(TAG, "Voice call đã đang chạy; bỏ qua lệnh start trùng")
+            return
+        }
+        val call = VoiceCall(
+            context = applicationContext,
+            targetProvider = { currentSessionAdapter?.currentVoiceTarget() },
+            nodeIdProvider = { MusePreferences.getMuseIdentity(this).nodeId },
+            appIdProvider = { MusePreferences.getVoiceAppId(this) },
+            listener = { status -> setVoiceCallStatus(status.toJson()) }
+        )
+        voiceCall = call
+        call.start()
+    }
+
     override fun onDestroy() {
         readyAnnouncementRequested = false
         handler.removeCallbacksAndMessages(null)
         unregisterSpeakerButtonReceiver()
         SpeakerButtonMonitor.disarm()
+
+        voiceCall?.stop("service_stop")
+        voiceCall = null
 
         telemetryFuture?.cancel(false)
         telemetryFuture = null
@@ -414,6 +448,8 @@ class AgentService : Service() {
         private const val ACTION_REOPEN_PAIRING_WINDOW = "vn.tutu.muser1.ACTION_REOPEN_PAIRING_WINDOW"
         private const val ACTION_CONFIRM_PAIRING_PRESS = "vn.tutu.muser1.ACTION_CONFIRM_PAIRING_PRESS"
         private const val ACTION_PROBE_VOICE_CALL = "vn.tutu.muser1.ACTION_PROBE_VOICE_CALL"
+        private const val ACTION_VOICE_CALL_START = "vn.tutu.muser1.ACTION_VOICE_CALL_START"
+        private const val ACTION_VOICE_CALL_STOP = "vn.tutu.muser1.ACTION_VOICE_CALL_STOP"
         private const val HTTP_PROVISION_WINDOW_MS = 10 * 60 * 1000L
         private const val NOTIFICATION_ID = 1001
         private const val TELEMETRY_INTERVAL_SECONDS = 30L
@@ -443,6 +479,41 @@ class AgentService : Service() {
         @Volatile
         var currentSessionAdapter: MuseSessionAdapter? = null
             private set
+
+        /** Snapshot trạng thái cuộc gọi voice gần nhất, để /status đọc. */
+        @Volatile
+        private var voiceCallStatus: JSONObject =
+            JSONObject().put("state", "idle").put("active", false)
+
+        fun voiceCallStatusJson(): JSONObject = voiceCallStatus
+
+        internal fun setVoiceCallStatus(json: JSONObject) {
+            voiceCallStatus = json
+        }
+
+        /** Bắt đầu cuộc gọi voice Phase 1 (từ HTTP :8080 / Muse command / ADB). */
+        fun startVoiceCall(context: Context) {
+            val intent = Intent(context, AgentService::class.java).apply {
+                action = ACTION_VOICE_CALL_START
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(context, intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        /** Kết thúc cuộc gọi voice đang chạy (nếu có). */
+        fun stopVoiceCall(context: Context) {
+            val intent = Intent(context, AgentService::class.java).apply {
+                action = ACTION_VOICE_CALL_STOP
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(context, intent)
+            } else {
+                context.startService(intent)
+            }
+        }
 
         /**
          * Mốc thời gian (ms) mà trước đó HTTP :8080 tạm thời không bắt

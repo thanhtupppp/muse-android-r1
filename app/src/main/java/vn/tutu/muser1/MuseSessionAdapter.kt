@@ -107,6 +107,21 @@ class MuseSessionAdapter(
     var activeNoiseHost: String = MusePreferences.DEFAULT_NOISE_HOST
         private set
 
+    /** Đích phiên gần nhất đã resolve thành công (cho phiên voice riêng). */
+    @Volatile
+    private var lastResolvedTarget: ResolvedTarget? = null
+
+    /**
+     * Đích để mở phiên Noise voice riêng (cùng VM + bearer của phiên
+     * chính, kể cả chế độ Direct). Null khi chưa resolve được lần nào —
+     * VoiceCall lúc đó báo no_target thay vì tự resolve trùng lặp.
+     */
+    fun currentVoiceTarget(): VoiceCall.VoiceTarget? {
+        val target = lastResolvedTarget ?: return null
+        if (target.vmId.isEmpty() || target.bearerToken.isEmpty()) return null
+        return VoiceCall.VoiceTarget(target.noiseHost, target.vmId, target.bearerToken)
+    }
+
     private var workerThread: Thread? = null
 
     fun start() {
@@ -158,6 +173,7 @@ class MuseSessionAdapter(
                 activeVmId = target.vmId
                 activeVmName = target.vmName
                 activeNoiseHost = target.noiseHost
+                lastResolvedTarget = target
                 val outcome = runOneSession(target)
                 controlRegistered = false
                 notifyState(false, lastError)

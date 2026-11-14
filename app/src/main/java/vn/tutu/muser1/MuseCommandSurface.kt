@@ -38,6 +38,8 @@ class MuseCommandSurface(private val context: Context) {
                 "muse_r1.get_status" -> invokeGetStatus()
                 "muse_r1.tts" -> invokeTts(params)
                 "muse_r1.stop_audio" -> invokeStopAudio()
+                "muse_r1.voice_call_start" -> invokeVoiceCallStart()
+                "muse_r1.voice_call_stop" -> invokeVoiceCallStop()
                 else -> invokeError("Unsupported command: $command")
             }
         } catch (error: Exception) {
@@ -94,6 +96,18 @@ class MuseCommandSurface(private val context: Context) {
             "muse_r1.stop_audio",
             buildCommandSpec(
                 description = "Stop current audio playback on the Phicomm R1 speaker."
+            )
+        )
+        commands.put(
+            "muse_r1.voice_call_start",
+            buildCommandSpec(
+                description = "Start a realtime voice call on the Phicomm R1 speaker: the microphone opens and the user can talk to Muse and hear replies from the speaker. The call runs in the background (45 second idle and 5 minute overall limits) and ends by itself or with muse_r1.voice_call_stop. The result payload carries the current voice_call status object."
+            )
+        )
+        commands.put(
+            "muse_r1.voice_call_stop",
+            buildCommandSpec(
+                description = "End the realtime voice call currently running on the Phicomm R1 speaker, if any. The result payload carries the current voice_call status object."
             )
         )
         return commands
@@ -199,6 +213,26 @@ class MuseCommandSurface(private val context: Context) {
         )
     }
 
+    private fun invokeVoiceCallStart(): JSONObject {
+        Log.i(TAG, "Voice call start requested via Muse command")
+        AgentService.startVoiceCall(context)
+        return invokeSuccess(
+            JSONObject()
+                .put("accepted", true)
+                .put("voice_call", AgentService.voiceCallStatusJson())
+        )
+    }
+
+    private fun invokeVoiceCallStop(): JSONObject {
+        Log.i(TAG, "Voice call stop requested via Muse command")
+        AgentService.stopVoiceCall(context)
+        return invokeSuccess(
+            JSONObject()
+                .put("accepted", true)
+                .put("voice_call", AgentService.voiceCallStatusJson())
+        )
+    }
+
     private fun invokeSuccess(payload: JSONObject): JSONObject {
         return JSONObject()
             .put("ok", true)
@@ -235,6 +269,7 @@ This device is a Phicomm R1 smart speaker running an Android agent that turns it
 - Speak a short text aloud with muse_r1.tts, preferring Vietnamese and falling back to the system default voice. If the device has no speech engine, the command returns an error instead of pretending to speak.
 - Set the music volume from 0 to 100 with muse_r1.set_volume.
 - Stop speech and any audio it is playing with muse_r1.stop_audio.
+- Start a realtime voice call with muse_r1.voice_call_start and end it with muse_r1.voice_call_stop. During the call the user talks to the speaker and hears Muse answer from it.
 - Report health, pairing state and network summary with device.health and muse_r1.get_status.
 
 ## Controls
@@ -243,7 +278,7 @@ The round button on top is the speaker's only physical control. Its job is to co
 
 ## Limits and recovery
 
-- This build exposes no microphone command to Muse, so never speak to the speaker expecting it to hear or answer by voice.
+- The microphone is only live during a voice call started with muse_r1.voice_call_start; it is off at all other times.
 - If commands fail, device.health shows whether the speaker is paired and which network it is on. The owner recovers the speaker with the Muse Mobile app or by restarting it; beyond power there is nothing to press or unplug."""
     }
 }

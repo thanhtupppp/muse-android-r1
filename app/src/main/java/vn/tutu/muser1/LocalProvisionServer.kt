@@ -101,6 +101,8 @@ class LocalProvisionServer(
                 "/unconfigure-muse" -> unconfigureMuse(session)
                 "/open-pairing-window", "/open-muse-pairing" -> openPairingWindow(session)
                 "/probe-voice-call", "/probe-voice" -> probeVoiceCall(session)
+                "/voice-call/start" -> startVoiceCall(session)
+                "/voice-call/stop" -> stopVoiceCall(session)
                 "/led" -> setLed(session)
                 "/command" -> handleCommand(session)
                 else -> notFound()
@@ -513,6 +515,41 @@ class LocalProvisionServer(
     }
 
     /**
+     * Bắt đầu cuộc gọi voice Phase 1 (phiên Noise voice riêng, app id
+     * hatch-web). Lệnh chỉ kích hoạt; trạng thái cuộc gọi đọc qua block
+     * `voice_call` của /status. Cùng quy tắc xác thực như các endpoint
+     * ghi khác (gồm /probe-voice-call).
+     */
+    private fun startVoiceCall(session: IHTTPSession): Response {
+        if (!isAuthorized(session)) {
+            return unauthorized()
+        }
+        AgentService.startVoiceCall(context)
+        Log.i(TAG, "Đã kích hoạt voice call (Phase 1) từ Mobile")
+        return json(
+            response = JSONObject()
+                .put("ok", true)
+                .put("voice_call_started", true)
+                .put("voice_call", AgentService.voiceCallStatusJson())
+        )
+    }
+
+    /** Kết thúc cuộc gọi voice Phase 1 đang chạy (nếu có). */
+    private fun stopVoiceCall(session: IHTTPSession): Response {
+        if (!isAuthorized(session)) {
+            return unauthorized()
+        }
+        AgentService.stopVoiceCall(context)
+        Log.i(TAG, "Đã yêu cầu dừng voice call (Phase 1) từ Mobile")
+        return json(
+            response = JSONObject()
+                .put("ok", true)
+                .put("voice_call_stopped", true)
+                .put("voice_call", AgentService.voiceCallStatusJson())
+        )
+    }
+
+    /**
      * Xoá toàn bộ cấu hình Muse (cả SDK token lẫn Direct VM) để đổi tài
      * khoản/token hoặc gỡ ghép đôi từ phía Mobile. Dùng lại
      * [MusePreferences.clearMusePairing] — cùng hàm với đường
@@ -758,6 +795,9 @@ class LocalProvisionServer(
             // Phase 0 voice call: kết quả probe mic + probe stream realtime
             // gần nhất (rỗng nếu chưa chạy probe).
             .put("voice", voiceStatusJson())
+            // Phase 1 voice call: trạng thái cuộc gọi hiện tại/gần nhất
+            // (state, call_id, session_id, reason, end_call_ack...).
+            .put("voice_call", AgentService.voiceCallStatusJson())
             // Dò đường LED vòng: node sysfs tìm thấy + có ghi được không +
             // service vendor liên quan (rỗng nếu chưa chạy probe). Mobile
             // chỉ hiện thẻ LED khi led_probe.available = true.

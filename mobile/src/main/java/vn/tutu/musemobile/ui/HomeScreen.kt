@@ -20,6 +20,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Lightbulb
@@ -132,6 +134,33 @@ fun HomeScreen(viewModel: ProvisioningViewModel) {
                     viewModel.runVoiceProbe(speakerIp.trim())
                 }
             )
+            Spacer(modifier = Modifier.height(8.dp))
+            // Cuộc gọi voice Phase 1: loa mở phiên Noise voice riêng và
+            // trò chuyện hai chiều với Muse (nói vào loa, nghe loa trả
+            // lời). Nút gạt start/stop; trạng thái lấy từ block voice_call
+            // của /status.
+            LoadingButton(
+                text = if (viewModel.voiceCallActive) "Kết thúc cuộc gọi thoại" else "Bắt đầu cuộc gọi thoại (Phase 1)",
+                loadingText = if (viewModel.voiceCallActive) "Đang kết thúc..." else "Đang bắt đầu...",
+                loading = viewModel.isTogglingVoiceCall,
+                icon = if (viewModel.voiceCallActive) Icons.Filled.CallEnd else Icons.Filled.Call,
+                onClick = {
+                    viewModel.setSpeakerIp(speakerIp.trim())
+                    if (viewModel.voiceCallActive) {
+                        viewModel.stopVoiceCall(speakerIp.trim())
+                    } else {
+                        viewModel.startVoiceCall(speakerIp.trim())
+                    }
+                }
+            )
+            if (viewModel.voiceCallStatusText.isNotEmpty()) {
+                Text(
+                    text = viewModel.voiceCallStatusText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
             // VM thực tế loa đang kết nối (server cấp ở chế độ SDK token) —
             // hiện kèm nút sao chép để mang sang cấu hình Direct VM khi cần.
             AnimatedVisibility(

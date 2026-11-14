@@ -147,6 +147,18 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
     var isProbingVoice by mutableStateOf(false)
         private set
 
+    /** Phase 1: đang gửi lệnh start/stop cuộc gọi voice lên loa. */
+    var isTogglingVoiceCall by mutableStateOf(false)
+        private set
+
+    /** Phase 1: cuộc gọi voice đang hoạt động (theo block voice_call của /status). */
+    var voiceCallActive by mutableStateOf(false)
+        private set
+
+    /** Phase 1: một dòng trạng thái cuộc gọi voice để hiện dưới nút gọi. */
+    var voiceCallStatusText by mutableStateOf("")
+        private set
+
     var musePairingModeStatus by mutableStateOf("")
         private set
 
@@ -540,6 +552,14 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                                     sb.append("• Voice call (P0): ⚠️ mở được stream nhưng chưa sẵn sàng (HTTP $http${if (events.isNotEmpty()) ", sự kiện: $events" else ""})\n")
                                 callErr.isNotEmpty() ->
                                     sb.append("• Voice call (P0): ❌ $callErr${if (http >= 0) " (HTTP $http)" else ""}\n")
+                                http >= 0 ->
+                                    // Probe chạy trọn vòng nhưng VM từ chối
+                                    // stream realtime trên PHIÊN CHUNG (ca
+                                    // thật 2026-11-14: HTTP 400, end-call vẫn
+                                    // 200). Đây là kết quả ĐÃ BIẾT TRƯỚC và
+                                    // là lý do Phase 1 dùng phiên voice riêng
+                                    // — không phải ca "chưa rõ" cần raw dump.
+                                    sb.append("• Voice call (P0): ❌ VM từ chối stream trên phiên chung (HTTP $http) — đúng như dự kiến; Phase 1 dùng phiên voice riêng\n")
                                 else ->
                                     // Không accepted, không error: in NGUYÊN VĂN
                                     // JSON — bản tóm tắt cũ nuốt mất bằng chứng
@@ -548,6 +568,33 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                                     sb.append("• Voice call (P0): ❌ chưa rõ — raw: ${call.toString().take(220)}\n")
                             }
                         }
+                    }
+                    // Phase 1 voice call: trạng thái cuộc gọi từ block
+                    // voice_call (phiên voice riêng) — cập nhật nút
+                    // start/stop ở Home và một dòng tóm tắt trong bảng.
+                    val voiceCall = res.optJSONObject("voice_call")
+                    if (voiceCall != null && voiceCall.length() > 0) {
+                        val vcState = voiceCall.optString("state", "")
+                        voiceCallActive = voiceCall.optBoolean("active", false)
+                        val vcReason = voiceCall.optString("reason", "")
+                        val vcError = voiceCall.optString("error", "")
+                        voiceCallStatusText = when (vcState) {
+                            "connecting" -> "📞 Đang kết nối phiên voice…"
+                            "admitting" -> "📞 Đang xin vào cuộc gọi (admission)…"
+                            "in_call" -> "📞 Đang trong cuộc gọi — nói vào loa để trò chuyện với Muse"
+                            "ending" -> "📞 Đang kết thúc cuộc gọi…"
+                            "ended" -> "📞 Cuộc gọi đã kết thúc" +
+                                (if (vcReason.isNotEmpty()) " ($vcReason)" else "") +
+                                (if (voiceCall.optBoolean("end_call_ack", false)) " — VM đã xác nhận end-call ✅" else "")
+                            "failed" -> "📞 Cuộc gọi lỗi: ${vcError.ifEmpty { vcReason }}"
+                            else -> ""
+                        }
+                        if (vcState.isNotEmpty() && vcState != "idle") {
+                            sb.append("• Voice call (P1): ${voiceCallStatusText.removePrefix("📞 ")}\n")
+                        }
+                    } else {
+                        voiceCallActive = false
+                        voiceCallStatusText = ""
                     }
                     sb.append("• Mạng: $net")
                     commandResult = sb.toString()
@@ -605,6 +652,55 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                 commandResult = "🎙️ Voice probe chưa trả kết quả mới sau 90 giây. " +
                     "Thử bấm 'Kiểm tra trạng thái loa' — kết quả có thể đã về muộn phía loa."
             }
+        }
+    }
+
+    /**
+     * Bắt đầu cuộc gọi voice Phase 1: POST /voice-call/start kích loa mở
+     * phiên Noise voice riêng (app id hatch-web), admission và phát/thu
+     * tiếng hai chiều. Trạng thái cuộc gọi theo block voice_call trong
+     * /status; hàm này refresh trạng thái vài lần trong lúc cuộc gọi vào
+     * giai đoạn in_call. Cuộc gọi tự kết thúc theo idle 45s / overall
+     * 300s phía loa hoặc bằng nút dừng.
+     */
+    fun startVoiceCall(ip: String? = null) {
+        val targetIp = (ip ?: speakerIp).trim()
+        if (isTogglingVoiceCall || voiceCallActive) return
+        viewModelScope.launch {
+            isTogglingVoiceCall = true
+            val started = apiClient.startVoiceCall(speakerIp = targetIp, token = authToken())
+            isTogglingVoiceCall = false
+            if (started.isFailure) {
+                commandResult = "❌ Không bắt đầu được voice call: " +
+                    "${started.exceptionOrNull()?.message}. Kiểm tra điện thoại có cùng Wi-Fi với loa không."
+                return@launch
+            }
+            voiceCallStatusText = "📞 Đang kết nối phiên voice…"
+            // Admission + readiness có thể mất vài giây: refresh vài nhịp
+            // đầu, sau đó người dùng tự bấm Kiểm tra trạng thái nếu cần.
+            repeat(4) {
+                delay(3_000L)
+                checkMuseStatus(targetIp)
+                if (!voiceCallActive && voiceCallStatusText.contains("kết thúc")) return@launch
+            }
+        }
+    }
+
+    /** Kết thúc cuộc gọi voice Phase 1 đang chạy trên loa. */
+    fun stopVoiceCall(ip: String? = null) {
+        val targetIp = (ip ?: speakerIp).trim()
+        if (isTogglingVoiceCall) return
+        viewModelScope.launch {
+            isTogglingVoiceCall = true
+            val stopped = apiClient.stopVoiceCall(speakerIp = targetIp, token = authToken())
+            isTogglingVoiceCall = false
+            if (stopped.isFailure) {
+                commandResult = "❌ Không dừng được voice call: " +
+                    "${stopped.exceptionOrNull()?.message}"
+                return@launch
+            }
+            delay(1_500L)
+            checkMuseStatus(targetIp)
         }
     }
 
