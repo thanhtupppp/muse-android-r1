@@ -600,7 +600,13 @@ class MuseSessionAdapter(
         val transport = activeTransport
         val ws = activeWs
         if (transport == null || ws == null || !controlRegistered) {
-            return result.put("accepted", false).put("error", "SESSION_NOT_READY")
+            // Return này nằm TRƯỚC khối try/finally bên dưới — mà finally là
+            // nơi duy nhất lưu kết quả. Bản đầu cứ thế quẳng mất phán quyết
+            // SESSION_NOT_READY (runVoiceProbes bỏ qua giá trị trả về), nên
+            // /status mãi rỗng dù probe đã chạy. Lưu tường minh trước khi về.
+            result.put("accepted", false).put("error", "SESSION_NOT_READY")
+            MusePreferences.setVoiceCallProbe(context, result.toString())
+            return result
         }
 
         val callId = UUID.randomUUID().toString()
@@ -743,7 +749,13 @@ class MuseSessionAdapter(
                     .put("end_call_http", endHttp)
                     .put("end_call_ack", endAck)
             }
-        } catch (error: Exception) {
+        } catch (error: Throwable) {
+            // Throwable chứ không chỉ Exception: probe là công cụ chẩn đoán,
+            // một Error (NoClassDefFoundError, VerifyError trên Android cũ…)
+            // cũng phải để lại dấu vết có tên trong kết quả đã lưu, thay vì
+            // chỉ còn object dở dang (probed_at_ms + mode + call_id) mà
+            // không có phán quyết nào — đúng vết đã gặp trên loa thật
+            // ngày 2026-11-14.
             Log.e(TAG, "Voice call probe lỗi", error)
             result.put("accepted", false).put("error", error.javaClass.simpleName)
         } finally {

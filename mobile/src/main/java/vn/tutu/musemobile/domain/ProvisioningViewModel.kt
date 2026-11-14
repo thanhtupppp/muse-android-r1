@@ -529,15 +529,23 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                         val call = voice.optJSONObject("call_probe")
                         if (call != null && call.length() > 0) {
                             val callErr = call.optString("error", "")
+                            val http = call.optInt("http_status", -1)
+                            val events = call.optJSONArray("event_types")?.let { arr ->
+                                (0 until arr.length()).joinToString(",") { arr.optString(it) }
+                            }.orEmpty()
                             when {
                                 call.optBoolean("accepted", false) && call.optBoolean("ready", false) ->
                                     sb.append("• Voice call (P0): ✅ VM chấp nhận cuộc gọi thử, đã sẵn sàng (có session_id)\n")
                                 call.optBoolean("accepted", false) ->
-                                    sb.append("• Voice call (P0): ⚠️ mở được stream nhưng chưa sẵn sàng\n")
+                                    sb.append("• Voice call (P0): ⚠️ mở được stream nhưng chưa sẵn sàng (HTTP $http${if (events.isNotEmpty()) ", sự kiện: $events" else ""})\n")
                                 callErr.isNotEmpty() ->
-                                    sb.append("• Voice call (P0): ❌ $callErr\n")
+                                    sb.append("• Voice call (P0): ❌ $callErr${if (http >= 0) " (HTTP $http)" else ""}\n")
                                 else ->
-                                    sb.append("• Voice call (P0): ❌ chưa có kết quả\n")
+                                    // Không accepted, không error: in NGUYÊN VĂN
+                                    // JSON — bản tóm tắt cũ nuốt mất bằng chứng
+                                    // đúng ở ca này (2026-11-14, probe chết giữa
+                                    // chừng chỉ để lại object dở dang).
+                                    sb.append("• Voice call (P0): ❌ chưa rõ — raw: ${call.toString().take(220)}\n")
                             }
                         }
                     }
