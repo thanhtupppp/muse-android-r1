@@ -199,8 +199,15 @@ class AgentService : Service() {
         }.start()
     }
 
-    /** Chạy cả mic probe lẫn voice-call probe (theo yêu cầu qua ADB). */
+    /** Chạy cả mic probe lẫn voice-call probe (theo yêu cầu qua ADB/Mobile). */
     private fun runVoiceProbes() {
+        // Hai probe chạy trên hai thread RIÊNG. Bản đầu chạy nối tiếp và một
+        // lần chạy trên loa thật (2026-11-14) đã không trả call_probe trong
+        // 60 giây: AudioRecord.read() trên HAL của R1 có thể block lâu hơn
+        // hạn đọc (deadline trong VoiceProbe chỉ được kiểm tra GIỮA các lần
+        // read), mic probe treo là call probe chết đói theo. Call probe là
+        // vé qua cổng Phase 0 nên phải luôn chạy độc lập và có giới hạn
+        // thời gian riêng (~25 giây theo thiết kế probe).
         Thread {
             try {
                 val mic = VoiceProbe.probeMicrophone()
@@ -209,12 +216,15 @@ class AgentService : Service() {
             } catch (error: Exception) {
                 Log.e(TAG, "Mic probe lỗi", error)
             }
+        }.start()
+        Thread {
             val adapter = museSessionAdapter
             if (adapter == null) {
                 Log.w(TAG, "Voice call probe bỏ qua: Muse session chưa chạy")
                 MusePreferences.setVoiceCallProbe(
                     this,
                     JSONObject()
+                        .put("probed_at_ms", System.currentTimeMillis())
                         .put("accepted", false)
                         .put("error", "NO_SESSION_ADAPTER")
                         .toString()

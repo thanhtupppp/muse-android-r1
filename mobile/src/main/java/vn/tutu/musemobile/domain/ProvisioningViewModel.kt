@@ -555,7 +555,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
      * Chạy bộ probe Phase 0 của voice call trên loa rồi chờ kết quả mới:
      * POST /probe-voice-call kích AgentService chạy mic probe + call probe
      * (trước đây chỉ kích được qua ADB), sau đó poll /status cho tới khi
-     * call_probe mang probed_at_ms mới hơn mốc ban đầu (tối đa ~60 giây —
+     * call_probe mang probed_at_ms mới hơn mốc ban đầu (tối đa ~90 giây —
      * riêng admission chờ readiness có thể mất tới ~35 giây), cuối cùng vẽ
      * lại bảng trạng thái đầy đủ qua checkMuseStatus.
      */
@@ -578,7 +578,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
             }
             commandResult = "🎙️ Đang chạy voice probe trên loa… Hãy nói gần loa NGAY lúc này " +
                 "để mic đo được tiếng nói thật (probe mic chạy trong vài giây đầu)."
-            val deadlineMs = System.currentTimeMillis() + 60_000L
+            val deadlineMs = System.currentTimeMillis() + 90_000L
             var fresh = false
             while (System.currentTimeMillis() < deadlineMs) {
                 delay(3_000L)
@@ -594,8 +594,8 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
             if (fresh) {
                 checkMuseStatus(targetIp)
             } else {
-                commandResult = "🎙️ Voice probe chưa trả kết quả mới sau 60 giây. " +
-                    "Loa có thể đang bận hoặc phiên Muse vừa reconnect — đợi ít phút rồi chạy lại."
+                commandResult = "🎙️ Voice probe chưa trả kết quả mới sau 90 giây. " +
+                    "Thử bấm 'Kiểm tra trạng thái loa' — kết quả có thể đã về muộn phía loa."
             }
         }
     }
