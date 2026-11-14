@@ -289,16 +289,20 @@ class MuseSessionAdapter(
                 "default=${selectedVm.isDefault} (tổng ${vms.size} VM)"
         )
 
-        val fallbackHost = MusePreferences.getNoiseHost(context)
-        val noiseHost = MuseApi.extractNoiseHost(selectedVm.vmUrl, fallbackHost)
+        // Host để quay số Noise LUÔN là host đã cấu hình: app Muse gửi kèm
+        // trong provision_v2, hoặc host nhập tay ở Direct VM, hoặc mặc định
+        // hatch.metaaivm.com — đúng như bản chính thức (ESP32
+        // noise_control.cpp chỉ quay số tới s_noise_host đã provision; Linux
+        // link_client.noise_url cũng dựng URL từ noise_host + vm_id).
+        // TUYỆT ĐỐI không lấy host từ vm_url/vm_ws_url của fetch_vms: host
+        // dạng <vm_id>.metaivm.com không tồn tại trên DNS công khai
+        // (NXDOMAIN — đã xác minh trên loa thật ngày 2026-11-14: loa nhận đủ
+        // cấu hình BLE, fetch_vms chạy được, nhưng không bao giờ nối được
+        // Noise vì host suy ra từ vm_url không phân giải được).
+        // vm_url chỉ còn dùng để suy ra vm_id khi API không trả vm_id.
+        val noiseHost = MusePreferences.getNoiseHost(context)
         val vmId = MuseApi.deriveVmId(selectedVm.vmId, selectedVm.vmUrl)
-        val wsUrl = if (selectedVm.vmUrl.contains("/v1/noise") &&
-            (selectedVm.vmUrl.startsWith("wss://") || selectedVm.vmUrl.startsWith("ws://"))
-        ) {
-            selectedVm.vmUrl
-        } else {
-            buildNoiseUrl(noiseHost, vmId)
-        }
+        val wsUrl = buildNoiseUrl(noiseHost, vmId)
         return Triple(
             ResolvedTarget(
                 mode = MusePreferences.getMusePairingMode(context),

@@ -65,14 +65,11 @@ object MuseApi {
         }
     }
 
-    fun extractNoiseHost(vmUrl: String, fallback: String = MusePreferences.DEFAULT_NOISE_HOST): String {
-        return try {
-            val host = URI(vmUrl).host?.trim().orEmpty()
-            host.ifEmpty { fallback }
-        } catch (_: Exception) {
-            fallback
-        }
-    }
+    // Đã từng có extractNoiseHost(vmUrl): cố ý KHÔNG khôi phục. Host trong
+    // vm_url/vm_ws_url của fetch_vms (dạng <vm_id>.metaivm.com) không phân
+    // giải được trên DNS công khai; bản chính thức không bao giờ quay số
+    // tới host đó — Noise luôn đi tới noise_host đã provision (hoặc
+    // DEFAULT_NOISE_HOST) với vm_id gắn ở query. Xem MuseSessionAdapter.
 
     fun fetchVms(accessToken: String, apiBaseUrl: String = API_BASE): Pair<List<MuseVm>, Int?> {
         val connection = openConnection(
