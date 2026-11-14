@@ -110,6 +110,17 @@ object VoiceCallSpec {
     const val MAX_SEND_BYTES = 64 * 1024
 
     val ZERO_FRAME = ByteArray(FRAME_BYTES)
+
+    /**
+     * Đường dẫn stream realtime theo thứ tự thử. Đường đầu là đường của SDK
+     * hiện tại; trên phiên voice riêng VM của người dùng trả 404 cho nó (đo
+     * trên thiết bị 2026-11-14) trong khi chính endpoint đó trên phiên chung
+     * trả 400 và end-call chạy ở cả hai phiên - tức route realtime của app
+     * hatch-web nằm ở họ tiền tố api, đúng mẫu fallback hai tiền tố mà
+     * link_client của SDK dùng cho tts-stream (bản api trước, 404 mới lùi
+     * về bản thường).
+     */
+    val REALTIME_PATHS = listOf("/voice/realtime", "/api/voice/realtime")
 }
 
 // ---------------------------------------------------------------------------
@@ -1140,13 +1151,23 @@ class VoiceCall(
             Log.i(TAG, "voice session connected (vm=${target.vmId}, app_id=$appId)")
 
             // --- Admission ---
-            val (streamId, queue) = voiceSession.openStream(
-                "POST",
-                "/voice/realtime?call_id=$callId",
-                listOf(NoiseHeader("Content-Type", "application/x-ndjson; charset=utf-8"))
-            )
-            realtimeStreamId = streamId
-            realtimeQueue = queue
+            // Thử các đường realtime theo thứ tự; 404 ở đường đầu (chưa có sự
+            // kiện nào được nhận) thì reset stream và thử đường kế tiếp trên
+            // cùng một phiên voice - xem VoiceCallSpec.REALTIME_PATHS.
+            var realtimePathIndex = 0
+            fun openRealtimeStream(): Pair<Long, LinkedBlockingQueue<ServiceFrame>> {
+                val opened = voiceSession.openStream(
+                    "POST",
+                    "${VoiceCallSpec.REALTIME_PATHS[realtimePathIndex]}?call_id=$callId",
+                    listOf(NoiseHeader("Content-Type", "application/x-ndjson; charset=utf-8"))
+                )
+                realtimeStreamId = opened.first
+                realtimeQueue = opened.second
+                return opened
+            }
+            val firstOpened = openRealtimeStream()
+            var streamId = firstOpened.first
+            var queue = firstOpened.second
             val admission = VoiceEvents.admissionNdjson(callId, nodeIdProvider())
             admissionSent = true // SDK: tính là "đã gửi" ngay khi mở stream xong
             if (!voiceSession.sendBodyChunk(streamId, admission)) {
@@ -1163,7 +1184,7 @@ class VoiceCall(
             val readyDeadline = startedAtMs + minOf(
                 VoiceCallSpec.READY_TIMEOUT_MS, VoiceCallSpec.OVERALL_TIMEOUT_MS
             )
-            val splitter = NdjsonSplitter()
+            var splitter = NdjsonSplitter()
             var httpStatus = -1
             var ready = false
             var receivedRealAudio = false
@@ -1242,6 +1263,29 @@ class VoiceCall(
                 }
                 if (httpStatus in 200..299) {
                     // HTTP tốt nhưng vẫn phải chờ sự kiện readiness mới gửi audio.
+                } else if (httpStatus == 404 && realtimePathIndex < VoiceCallSpec.REALTIME_PATHS.lastIndex) {
+                    // Đường realtime này không có trên VM ở phiên voice: reset
+                    // stream, thử đường kế tiếp trên cùng phiên và gửi lại
+                    // admission (chưa có sự kiện nào được nhận nên an toàn).
+                    Log.w(
+                        TAG,
+                        "realtime 404 at ${VoiceCallSpec.REALTIME_PATHS[realtimePathIndex]}; " +
+                            "retrying ${VoiceCallSpec.REALTIME_PATHS[realtimePathIndex + 1]}"
+                    )
+                    voiceSession.resetStream(streamId)
+                    voiceSession.unregisterStream(streamId)
+                    realtimePathIndex++
+                    val reopened = openRealtimeStream()
+                    streamId = reopened.first
+                    queue = reopened.second
+                    splitter = NdjsonSplitter()
+                    httpStatus = -1
+                    if (!voiceSession.sendBodyChunk(streamId, admission)) {
+                        finalReason = "admission_send_failed"
+                        finalError = "Không gửi lại được admission lên stream voice"
+                        terminalState = State.FAILED
+                        break@readiness
+                    }
                 } else if (httpStatus >= 0) {
                     finalReason = "admission_http_$httpStatus"
                     finalError = "VM từ chối admission voice (HTTP $httpStatus)"

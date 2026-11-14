@@ -7,6 +7,7 @@ import android.os.Build
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -20,6 +21,11 @@ class R1ApiClient(private val context: Context? = null) {
     private val baseHttpClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
+        // NanoHTTPD phía loa không nuốt body "{}" của các POST không có body
+        // thật khi giữ keep-alive: bytes thừa rò sang request kế tiếp trên cùng
+        // một socket ("BAD REQUEST: Syntax error. HTTP verb {}GET unhandled").
+        // API LAN này không cần dùng lại kết nối - tắt hẳn connection pool.
+        .connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS))
         .build()
 
     private fun getHttpClient(): OkHttpClient {
