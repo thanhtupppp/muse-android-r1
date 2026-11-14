@@ -591,7 +591,31 @@ internal class VoiceNoiseSession {
     private var readerThread: Thread? = null
 
     /** Mở WebSocket + handshake Noise XX; chặn tới khi sẵn sàng hoặc lỗi. */
-    fun connect(wsUrl: String, bearerToken: String) {
+    /** App id của phiên (hatch-web) — gắn vào mọi request như bản ESP32. */
+    @Volatile
+    private var appId: String = ""
+
+    /**
+     * Header nền của MỌI stream request trên phiên này, chép đúng bản
+     * ESP32 đang gọi được (open_stream trong muse_chat_session.cpp):
+     * x-request-id cho từng request và x-app-id của app. Bản Android
+     * cũ không gửi hai header này — các endpoint link/chat bỏ qua,
+     * nhưng handler realtime có thể đòi — nên từ giờ gửi đủ.
+     */
+    private fun baseHeaders(): List<NoiseHeader> {
+        val headers = ArrayList<NoiseHeader>()
+        headers.add(
+            NoiseHeader(
+                "x-request-id",
+                "muse-" + java.util.UUID.randomUUID().toString().replace("-", "").take(16)
+            )
+        )
+        if (appId.isNotEmpty()) headers.add(NoiseHeader("x-app-id", appId))
+        return headers
+    }
+
+    fun connect(wsUrl: String, bearerToken: String, appId: String = "") {
+        this.appId = appId
         val request = Request.Builder()
             .url(wsUrl)
             .header("Authorization", "Bearer $bearerToken")
@@ -718,7 +742,7 @@ internal class VoiceNoiseSession {
         headers: List<NoiseHeader>
     ): Pair<Long, LinkedBlockingQueue<ServiceFrame>> {
         val t = transport ?: throw VoiceSessionException("no_transport")
-        val (streamId, frames) = t.startStreamRequest(verb, path, headers)
+        val (streamId, frames) = t.startStreamRequest(verb, path, baseHeaders() + headers)
         val queue = registerStream(streamId)
         if (!sendEncrypted(frames)) {
             unregisterStream(streamId)
@@ -756,7 +780,7 @@ internal class VoiceNoiseSession {
     ): Pair<Int, String> {
         val t = transport ?: return -1 to "no_transport"
         val (streamId, frames) = try {
-            t.encryptHttpRequest(verb, path, body, headers)
+            t.encryptHttpRequest(verb, path, body, baseHeaders() + headers)
         } catch (e: Exception) {
             return -1 to (e.message ?: "encrypt_failed")
         }
@@ -1147,7 +1171,7 @@ class VoiceCall(
             transition(Status(State.CONNECTING, callId = callId, appId = appId, vmId = target.vmId, startedAtMs = startedAtMs))
             val voiceSession = VoiceNoiseSession()
             session = voiceSession
-            voiceSession.connect(buildVoiceNoiseUrl(target.noiseHost, target.vmId, appId), target.bearerToken)
+            voiceSession.connect(buildVoiceNoiseUrl(target.noiseHost, target.vmId, appId), target.bearerToken, appId)
             Log.i(TAG, "voice session connected (vm=${target.vmId}, app_id=$appId)")
 
             // --- Lập phiên chat trên kết nối voice (bài học ESP32) ---
@@ -1244,6 +1268,9 @@ class VoiceCall(
             // đọc được LÝ DO của VM (thường là JSON lỗi ngắn) thay vì chỉ
             // còn mã HTTP — bài học từ các vòng 400/404/403 liên tiếp.
             val admissionBodySnippet = StringBuilder()
+            // Verdict của từng đường realtime đã đi qua (đường cuối thắng
+            // trong reason, nhưng bằng chứng đầy đủ phải giữ cả hai).
+            val walkedVerdicts = StringBuilder()
             readiness@ while (!ready) {
                 if (endReason != null) {
                     finalReason = endReason ?: "user_stop"
@@ -1323,6 +1350,9 @@ class VoiceCall(
                 if (httpStatus in 200..299) {
                     // HTTP tốt nhưng vẫn phải chờ sự kiện readiness mới gửi audio.
                 } else if ((httpStatus == 404 || httpStatus == 403) && realtimePathIndex < VoiceCallSpec.REALTIME_PATHS.lastIndex) {
+                    if (walkedVerdicts.isNotEmpty()) walkedVerdicts.append(' ')
+                    walkedVerdicts.append(VoiceCallSpec.REALTIME_PATHS[realtimePathIndex])
+                        .append('=').append(httpStatus)
                     // Đường realtime này không có trên VM ở phiên voice: reset
                     // stream, thử đường kế tiếp trên cùng phiên và gửi lại
                     // admission (chưa có sự kiện nào được nhận nên an toàn).
@@ -1352,6 +1382,7 @@ class VoiceCall(
                         .replace('\n', ' ').replace('\r', ' ').trim().take(200)
                     finalError = "VM từ chối admission voice (HTTP $httpStatus) tại " +
                         VoiceCallSpec.REALTIME_PATHS[realtimePathIndex] +
+                        (if (walkedVerdicts.isNotEmpty()) " · đã thử: $walkedVerdicts" else "") +
                         (if (snippet.isNotEmpty()) " · $snippet" else "")
                     if (ready) finalReason = ""
                     break@readiness
