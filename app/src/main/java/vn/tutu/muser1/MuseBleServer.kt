@@ -545,18 +545,37 @@ class MuseBleServer(
         // đang chờ pair, phát LOW_LATENCY + HIGH mãi sẽ tranh radio với
         // Wi-Fi (R1 dùng chung radio) và tốn điện vô ích sau khi đã pair.
         try {
+            // Đặt hạn cửa sổ TRƯỚC khi phát để ngay gói quảng bá đầu tiên
+            // đã mang paired flag 0x00 (xem pairedFlagByte()).
+            pairingWindowUntilMs = System.currentTimeMillis() + PAIRING_WINDOW_MS
             startAdvertisingInternal(
                 leAdvertiser,
                 AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY,
                 AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
             )
-            pairingWindowUntilMs = System.currentTimeMillis() + PAIRING_WINDOW_MS
             scheduleAdvertisingPolicy(generation)
         } catch (e: Exception) {
             lastStartError = "ADVERTISE_EXCEPTION:${e.javaClass.simpleName}"
             Log.e(TAG, "Lỗi khởi động BLE Advertising", e)
             closeGattServer()
         }
+    }
+
+    /**
+     * Byte paired flag trong manufacturer data: 0x01 chỉ khi loa đã hoàn
+     * tất cấu hình Muse VÀ không có cửa sổ pairing nào đang mở; mọi
+     * trường hợp còn lại 0x00 (đang chờ/sẵn sàng ghép nối).
+     */
+    private fun pairedFlagByte(): Byte {
+        val pairingWindowOpen = pairingWindowUntilMs > System.currentTimeMillis()
+        if (pairingWindowOpen) return PAIRED_FLAG_UNPAIRED.toByte()
+        val paired = try {
+            MusePreferences.isMusePaired(context)
+        } catch (e: Exception) {
+            Log.w(TAG, "Không đọc được trạng thái Muse paired cho paired flag", e)
+            false
+        }
+        return (if (paired) PAIRED_FLAG_PAIRED else PAIRED_FLAG_UNPAIRED).toByte()
     }
 
     @SuppressLint("MissingPermission")
@@ -581,17 +600,20 @@ class MuseBleServer(
 
         val serviceParcelUuid = ParcelUuid(UUID.fromString(SERVICE_UUID))
 
-        // Meta Muse Gadget advertisement flags (ID: 0xFFFF):
-        // Chỉ đặt Bit 0 (0x01 = FLAG_PAIRING_MODE):
-        // Nếu đặt Bit 1 (0x02 = LINK_FLAG_BLUETOOTH_GADGET), HatchDeviceBleManager.onScanResult
-        // sẽ loại bỏ thiết bị khi ở chế độ Wi-Fi link (includeBluetoothGadgets == false).
-        // Với 0x01, advertisesBluetoothGadget = false nhưng hatchAdvertisedPairingFlag = true
-        // và matchesDeviceName("MuseGadget-...") = true nên app Meta Muse luôn hiển thị loa.
-        val flags = FLAG_PAIRING_MODE.toByte()
-
+        // Manufacturer data (company 0xFFFF): ĐÚNG MỘT byte "paired flag"
+        // theo cả hai bản SDK chính thức — ESP32 (ble_server.c:
+        // `config_setup_complete() ? 0x01 : 0x00`) và Linux (ble_server.py
+        // phát Byte(0) khi chờ pair): 0x01 = thiết bị ĐÃ hoàn tất setup,
+        // 0x00 = đang chờ ghép nối. Bản cũ phát cứng 0x01 kể cả khi đang
+        // mời pair (do đọc ngược ngữ nghĩa byte này thành "pairing mode"),
+        // nên app Muse coi loa là thiết bị đã pair xong và KHÔNG liệt kê
+        // trong Add Device — dù nRF Connect thấy gói quảng bá hoàn hảo.
+        // Mọi đường advertising của Agent đều là quảng bá mời pair, riêng
+        // cửa sổ pairing đang mở thì luôn trình diện 0x00 (kể cả loa đã có
+        // cấu hình Muse, vì chủ loa đã chủ động mở pair lại).
         val advertiseData = AdvertiseData.Builder()
             .addServiceUuid(serviceParcelUuid)
-            .addManufacturerData(PAIRED_FLAG_COMPANY_ID, byteArrayOf(flags))
+            .addManufacturerData(PAIRED_FLAG_COMPANY_ID, byteArrayOf(pairedFlagByte()))
             .build()
 
         val scanResponse = AdvertiseData.Builder()
@@ -643,12 +665,12 @@ class MuseBleServer(
             return
         }
         try {
+            pairingWindowUntilMs = System.currentTimeMillis() + PAIRING_WINDOW_MS
             startAdvertisingInternal(
                 adv,
                 AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY,
                 AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
             )
-            pairingWindowUntilMs = System.currentTimeMillis() + PAIRING_WINDOW_MS
             scheduleAdvertisingPolicy(startGeneration)
             Log.i(TAG, "Đã mở lại cửa sổ pairing BLE (phát nhanh ${PAIRING_WINDOW_MS / 60_000} phút)")
         } catch (e: Exception) {
@@ -968,8 +990,12 @@ class MuseBleServer(
         const val TX_UUID = "d75dc4ca-7b2b-4e9c-8f0a-1d2e3f4a5b6c"
         const val CCCD_UUID = "00002902-0000-1000-8000-00805f9b34fb"
         const val PAIRED_FLAG_COMPANY_ID = 0xFFFF
-        const val FLAG_PAIRING_MODE = 0x01
-        const val FLAG_BLUETOOTH_GADGET = 0x02
+
+        /** Paired flag = đã hoàn tất setup (theo SDK ESP32/Linux). */
+        const val PAIRED_FLAG_PAIRED = 0x01
+
+        /** Paired flag = đang chờ ghép nối (theo SDK ESP32/Linux). */
+        const val PAIRED_FLAG_UNPAIRED = 0x00
     }
 }
 
