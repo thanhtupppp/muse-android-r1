@@ -503,6 +503,42 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                             }
                         )
                     }
+                    // Kết quả Phase 0 voice call (probe chạy ngầm phía loa,
+                    // lưu bền trong /status): đây là cổng quyết định có làm
+                    // Phase 1 (gọi thoại thật) hay không — mic phải mở được
+                    // và có tín hiệu (RMS > 0 khi nói gần loa), và VM phải
+                    // chấp nhận cuộc gọi thử (accepted + ready + có
+                    // session_id). VM từ chối stream trên phiên chung không
+                    // phải fail cứng: Phase 1 khi đó dùng phiên voice riêng.
+                    val voice = res.optJSONObject("voice")
+                    if (voice != null && voice.length() > 0) {
+                        val mic = voice.optJSONObject("mic_probe")
+                        if (mic != null && mic.length() > 0) {
+                            if (mic.optBoolean("supported", false)) {
+                                sb.append(
+                                    "• Mic (voice P0): ✅ mở được — " +
+                                        "${mic.optInt("sample_rate")} Hz, nguồn ${mic.optString("source", "?")}, " +
+                                        "RMS ${mic.optDouble("rms", 0.0)}, peak ${mic.optInt("peak")}\n"
+                                )
+                            } else {
+                                sb.append("• Mic (voice P0): ❌ không mở được thiết bị thu nào\n")
+                            }
+                        }
+                        val call = voice.optJSONObject("call_probe")
+                        if (call != null && call.length() > 0) {
+                            val callErr = call.optString("error", "")
+                            when {
+                                call.optBoolean("accepted", false) && call.optBoolean("ready", false) ->
+                                    sb.append("• Voice call (P0): ✅ VM chấp nhận cuộc gọi thử, đã sẵn sàng (có session_id)\n")
+                                call.optBoolean("accepted", false) ->
+                                    sb.append("• Voice call (P0): ⚠️ mở được stream nhưng chưa sẵn sàng\n")
+                                callErr.isNotEmpty() ->
+                                    sb.append("• Voice call (P0): ❌ $callErr\n")
+                                else ->
+                                    sb.append("• Voice call (P0): ❌ chưa có kết quả\n")
+                            }
+                        }
+                    }
                     sb.append("• Mạng: $net")
                     commandResult = sb.toString()
                 },
