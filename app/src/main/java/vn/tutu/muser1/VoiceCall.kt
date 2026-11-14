@@ -1150,6 +1150,58 @@ class VoiceCall(
             voiceSession.connect(buildVoiceNoiseUrl(target.noiseHost, target.vmId, appId), target.bearerToken)
             Log.i(TAG, "voice session connected (vm=${target.vmId}, app_id=$appId)")
 
+            // --- Lập phiên chat trên kết nối voice (bài học ESP32) ---
+            // Bản ESP32 của Christopher gọi được vì cuộc gọi chạy trên
+            // phiên CHAT của app hatch-web: ngay sau handshake nó mở
+            // POST /chat/subscribe và giữ stream đó suốt phiên. Bản
+            // Android cũ mở tunnel trống rồi gọi thẳng nên VM trả
+            // 403/404 ở admission. Mở subscription trước, chờ phản hồi
+            // đầu tiên: HTTP lỗi ở đây thì dừng sớm với lý do riêng.
+            val (subscribeId, subscribeQueue) = voiceSession.openStream(
+                "POST",
+                "/chat/subscribe",
+                listOf(
+                    NoiseHeader("Content-Type", "application/json"),
+                    NoiseHeader("Accept", "application/x-ndjson")
+                )
+            )
+            voiceSession.sendBodyChunk(subscribeId, "{}".toByteArray(Charsets.UTF_8), endBody = true)
+            var subscribeStatus = -1
+            var subscribeBody = ""
+            val subscribeDeadline = System.currentTimeMillis() + 5_000
+            while (System.currentTimeMillis() < subscribeDeadline) {
+                val frame = subscribeQueue.poll(250, TimeUnit.MILLISECONDS) ?: continue
+                if (frame.response != null) {
+                    subscribeStatus = frame.response.status
+                    if (frame.response.body.isNotEmpty()) {
+                        subscribeBody = String(frame.response.body, Charsets.UTF_8)
+                            .replace('\n', ' ').trim().take(160)
+                    }
+                    break
+                }
+                if (frame.reset != null) break
+            }
+            if (subscribeStatus >= 400) {
+                finalReason = "subscribe_http_$subscribeStatus"
+                finalError = "VM từ chối /chat/subscribe (HTTP $subscribeStatus) trên phiên voice" +
+                    (if (subscribeBody.isNotEmpty()) " · $subscribeBody" else "")
+                terminalState = State.FAILED
+                throw CallFlowException()
+            }
+            Log.i(TAG, "voice chat subscription open (HTTP $subscribeStatus)")
+            // Xả sự kiện chat trên subscription suốt cuộc gọi để hàng
+            // đợi không phình; nội dung thuộc về phiên chat, cuộc gọi
+            // chỉ cần subscription sống.
+            Thread({
+                while (!Thread.currentThread().isInterrupted) {
+                    try {
+                        subscribeQueue.poll(500, TimeUnit.MILLISECONDS)
+                    } catch (e: InterruptedException) {
+                        break
+                    }
+                }
+            }, "VoiceSubscribeDrain").apply { isDaemon = true; start() }
+
             // --- Admission ---
             // Thử các đường realtime theo thứ tự; 404 ở đường đầu (chưa có sự
             // kiện nào được nhận) thì reset stream và thử đường kế tiếp trên
