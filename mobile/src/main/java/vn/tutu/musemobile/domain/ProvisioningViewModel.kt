@@ -143,6 +143,8 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
         private set
 
     var isOpeningMusePairing by mutableStateOf(false)
+
+    var isProbingVoice by mutableStateOf(false)
         private set
 
     var musePairingModeStatus by mutableStateOf("")
@@ -546,6 +548,55 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                     commandResult = "Không kết nối được R1: ${err.message}"
                 }
             )
+        }
+    }
+
+    /**
+     * Chạy bộ probe Phase 0 của voice call trên loa rồi chờ kết quả mới:
+     * POST /probe-voice-call kích AgentService chạy mic probe + call probe
+     * (trước đây chỉ kích được qua ADB), sau đó poll /status cho tới khi
+     * call_probe mang probed_at_ms mới hơn mốc ban đầu (tối đa ~60 giây —
+     * riêng admission chờ readiness có thể mất tới ~35 giây), cuối cùng vẽ
+     * lại bảng trạng thái đầy đủ qua checkMuseStatus.
+     */
+    fun runVoiceProbe(ip: String? = null) {
+        val targetIp = (ip ?: speakerIp).trim()
+        if (isProbingVoice) return
+        viewModelScope.launch {
+            isProbingVoice = true
+            var baselineMs = 0L
+            apiClient.status(speakerIp = targetIp, token = authToken()).onSuccess { res ->
+                baselineMs = res.optJSONObject("voice")?.optJSONObject("call_probe")
+                    ?.optLong("probed_at_ms", 0L) ?: 0L
+            }
+            val started = apiClient.probeVoiceCall(speakerIp = targetIp, token = authToken())
+            if (started.isFailure) {
+                commandResult = "❌ Không kích hoạt được voice probe: " +
+                    "${started.exceptionOrNull()?.message}. Kiểm tra điện thoại có cùng Wi-Fi với loa không."
+                isProbingVoice = false
+                return@launch
+            }
+            commandResult = "🎙️ Đang chạy voice probe trên loa… Hãy nói gần loa NGAY lúc này " +
+                "để mic đo được tiếng nói thật (probe mic chạy trong vài giây đầu)."
+            val deadlineMs = System.currentTimeMillis() + 60_000L
+            var fresh = false
+            while (System.currentTimeMillis() < deadlineMs) {
+                delay(3_000L)
+                val res = apiClient.status(speakerIp = targetIp, token = authToken()).getOrNull()
+                val probedAt = res?.optJSONObject("voice")?.optJSONObject("call_probe")
+                    ?.optLong("probed_at_ms", 0L) ?: 0L
+                if (probedAt > baselineMs) {
+                    fresh = true
+                    break
+                }
+            }
+            isProbingVoice = false
+            if (fresh) {
+                checkMuseStatus(targetIp)
+            } else {
+                commandResult = "🎙️ Voice probe chưa trả kết quả mới sau 60 giây. " +
+                    "Loa có thể đang bận hoặc phiên Muse vừa reconnect — đợi ít phút rồi chạy lại."
+            }
         }
     }
 

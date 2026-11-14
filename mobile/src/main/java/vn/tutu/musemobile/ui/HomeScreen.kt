@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PowerSettingsNew
@@ -115,6 +116,20 @@ fun HomeScreen(viewModel: ProvisioningViewModel) {
                     viewModel.setSpeakerIp(speakerIp.trim())
                     viewModel.checkMuseStatus(speakerIp.trim())
                     checking = false
+                }
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            // Probe Phase 0 của voice call: loa tự chạy thử mic + admission
+            // lên VM rồi ghi kết quả vào /status — cổng quyết định Phase 1.
+            // Bấm xong nên nói gần loa ngay để mic đo tiếng nói thật.
+            LoadingButton(
+                text = "Chạy probe voice (Phase 0)",
+                loadingText = "Đang chạy probe voice...",
+                loading = viewModel.isProbingVoice,
+                icon = Icons.Filled.Mic,
+                onClick = {
+                    viewModel.setSpeakerIp(speakerIp.trim())
+                    viewModel.runVoiceProbe(speakerIp.trim())
                 }
             )
             // VM thực tế loa đang kết nối (server cấp ở chế độ SDK token) —

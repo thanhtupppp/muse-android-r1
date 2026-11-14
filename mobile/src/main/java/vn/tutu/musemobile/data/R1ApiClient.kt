@@ -269,6 +269,41 @@ class R1ApiClient(private val context: Context? = null) {
         }
     }
 
+    /**
+     * POST /probe-voice-call: nhờ loa chạy bộ probe Phase 0 của voice call
+     * (mic + admission thử lên VM). Probe chạy nền phía loa; kết quả đọc
+     * lại qua /status (block voice) sau vài chục giây.
+     */
+    suspend fun probeVoiceCall(
+        speakerIp: String,
+        token: String? = null
+    ): Result<JSONObject> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanIp = speakerIp.trim()
+            require(isValidIpv4(cleanIp)) { "Địa chỉ IP không hợp lệ: $speakerIp" }
+
+            val reqBuilder = Request.Builder()
+                .url("http://$cleanIp:8080/probe-voice-call")
+                .post("{}".toRequestBody("application/json".toMediaType()))
+            if (!token.isNullOrEmpty()) {
+                reqBuilder.addHeader("x-muse-token", token)
+            }
+
+            getHttpClient().newCall(reqBuilder.build()).execute().use { response ->
+                val rawBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    val sample = SecretRedactor.redact(rawBody.take(500))
+                    throw IOException("R1 từ chối chạy voice probe: HTTP ${response.code} ${response.message}; body=$sample")
+                }
+                val json = JSONObject(rawBody)
+                if (!json.optBoolean("ok", false)) {
+                    throw IOException("R1 báo lỗi: ${json.optString("error", rawBody)}")
+                }
+                json
+            }
+        }
+    }
+
     /** GET JSON từ một endpoint :8080 của loa, kèm token khi có. */
     private fun getJson(speakerIp: String, path: String, token: String?, label: String): JSONObject {
         val cleanIp = speakerIp.trim()

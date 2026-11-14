@@ -100,6 +100,7 @@ class LocalProvisionServer(
                 "/configure-muse", "/pair" -> configureMuse(session)
                 "/unconfigure-muse" -> unconfigureMuse(session)
                 "/open-pairing-window", "/open-muse-pairing" -> openPairingWindow(session)
+                "/probe-voice-call", "/probe-voice" -> probeVoiceCall(session)
                 "/led" -> setLed(session)
                 "/command" -> handleCommand(session)
                 else -> notFound()
@@ -479,6 +480,38 @@ class LocalProvisionServer(
         )
     }
 
+    /** Block `voice` dùng chung cho /status và /probe-voice-call. */
+    private fun voiceStatusJson(): JSONObject {
+        return JSONObject()
+            .put("app_id", MusePreferences.getVoiceAppId(context))
+            .put("mic_probe", parseJsonOrEmpty(MusePreferences.getVoiceMicProbe(context)))
+            .put("call_probe", parseJsonOrEmpty(MusePreferences.getVoiceCallProbe(context)))
+    }
+
+    /**
+     * Kích hoạt bộ probe Phase 0 của voice call từ Mobile. Trước đây probe
+     * chỉ kích được qua ADB (intent ACTION_PROBE_VOICE_CALL), mà ADB TCP
+     * không tự bật lại trên loa sau khi vào mạng nhà — nên trên thực tế
+     * call_probe không bao giờ chạy và cổng Phase 0 không có dữ kiện.
+     * Probe chạy nền trong AgentService (mic trước, rồi admission thử lên
+     * VM, tối đa ~40 giây); endpoint này trả về ngay kèm block voice hiện
+     * tại, Mobile poll /status để đọc kết quả mới. Cùng quy tắc xác thực
+     * như các endpoint ghi khác.
+     */
+    private fun probeVoiceCall(session: IHTTPSession): Response {
+        if (!isAuthorized(session)) {
+            return unauthorized()
+        }
+        AgentService.probeVoiceCall(context)
+        Log.i(TAG, "Đã kích hoạt voice probe (Phase 0) từ Mobile")
+        return json(
+            response = JSONObject()
+                .put("ok", true)
+                .put("voice_probe_started", true)
+                .put("voice", voiceStatusJson())
+        )
+    }
+
     /**
      * Xoá toàn bộ cấu hình Muse (cả SDK token lẫn Direct VM) để đổi tài
      * khoản/token hoặc gỡ ghép đôi từ phía Mobile. Dùng lại
@@ -724,13 +757,7 @@ class LocalProvisionServer(
             .put("wifi_provision", parseJsonOrEmpty(MusePreferences.getLastWifiProvision(context)))
             // Phase 0 voice call: kết quả probe mic + probe stream realtime
             // gần nhất (rỗng nếu chưa chạy probe).
-            .put(
-                "voice",
-                JSONObject()
-                    .put("app_id", MusePreferences.getVoiceAppId(context))
-                    .put("mic_probe", parseJsonOrEmpty(MusePreferences.getVoiceMicProbe(context)))
-                    .put("call_probe", parseJsonOrEmpty(MusePreferences.getVoiceCallProbe(context)))
-            )
+            .put("voice", voiceStatusJson())
             // Dò đường LED vòng: node sysfs tìm thấy + có ghi được không +
             // service vendor liên quan (rỗng nếu chưa chạy probe). Mobile
             // chỉ hiện thẻ LED khi led_probe.available = true.
