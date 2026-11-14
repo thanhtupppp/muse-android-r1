@@ -1188,6 +1188,10 @@ class VoiceCall(
             var httpStatus = -1
             var ready = false
             var receivedRealAudio = false
+            // Ghi lại một đoạn thân phản hồi admission để khi bị từ chối còn
+            // đọc được LÝ DO của VM (thường là JSON lỗi ngắn) thay vì chỉ
+            // còn mã HTTP — bài học từ các vòng 400/404/403 liên tiếp.
+            val admissionBodySnippet = StringBuilder()
             readiness@ while (!ready) {
                 if (endReason != null) {
                     finalReason = endReason ?: "user_stop"
@@ -1216,6 +1220,9 @@ class VoiceCall(
                 frame.response?.body?.takeIf { it.isNotEmpty() }?.let { chunks.add(it) }
                 frame.bodyChunk?.data?.takeIf { it.isNotEmpty() }?.let { chunks.add(it) }
                 for (chunk in chunks) {
+                    if (admissionBodySnippet.length < 400) {
+                        admissionBodySnippet.append(String(chunk, Charsets.UTF_8))
+                    }
                     for (line in splitter.feed(chunk)) {
                         val event = parseEvent(line) ?: continue
                         val type = event.optString("type")
@@ -1263,13 +1270,13 @@ class VoiceCall(
                 }
                 if (httpStatus in 200..299) {
                     // HTTP tốt nhưng vẫn phải chờ sự kiện readiness mới gửi audio.
-                } else if (httpStatus == 404 && realtimePathIndex < VoiceCallSpec.REALTIME_PATHS.lastIndex) {
+                } else if ((httpStatus == 404 || httpStatus == 403) && realtimePathIndex < VoiceCallSpec.REALTIME_PATHS.lastIndex) {
                     // Đường realtime này không có trên VM ở phiên voice: reset
                     // stream, thử đường kế tiếp trên cùng phiên và gửi lại
                     // admission (chưa có sự kiện nào được nhận nên an toàn).
                     Log.w(
                         TAG,
-                        "realtime 404 at ${VoiceCallSpec.REALTIME_PATHS[realtimePathIndex]}; " +
+                        "realtime HTTP $httpStatus at ${VoiceCallSpec.REALTIME_PATHS[realtimePathIndex]}; " +
                             "retrying ${VoiceCallSpec.REALTIME_PATHS[realtimePathIndex + 1]}"
                     )
                     voiceSession.resetStream(streamId)
@@ -1280,6 +1287,7 @@ class VoiceCall(
                     queue = reopened.second
                     splitter = NdjsonSplitter()
                     httpStatus = -1
+                    admissionBodySnippet.setLength(0)
                     if (!voiceSession.sendBodyChunk(streamId, admission)) {
                         finalReason = "admission_send_failed"
                         finalError = "Không gửi lại được admission lên stream voice"
@@ -1288,7 +1296,11 @@ class VoiceCall(
                     }
                 } else if (httpStatus >= 0) {
                     finalReason = "admission_http_$httpStatus"
-                    finalError = "VM từ chối admission voice (HTTP $httpStatus)"
+                    val snippet = admissionBodySnippet.toString()
+                        .replace('\n', ' ').replace('\r', ' ').trim().take(200)
+                    finalError = "VM từ chối admission voice (HTTP $httpStatus) tại " +
+                        VoiceCallSpec.REALTIME_PATHS[realtimePathIndex] +
+                        (if (snippet.isNotEmpty()) " · $snippet" else "")
                     if (ready) finalReason = ""
                     break@readiness
                 }

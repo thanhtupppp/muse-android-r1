@@ -585,6 +585,7 @@ class ProvisioningViewModel(application: Application) : AndroidViewModel(applica
                             "ending" -> "📞 Đang kết thúc cuộc gọi…"
                             "ended" -> "📞 Cuộc gọi đã kết thúc" +
                                 (if (vcReason.isNotEmpty()) " ($vcReason)" else "") +
+                                (if (vcError.isNotEmpty()) " — $vcError" else "") +
                                 (if (voiceCall.optBoolean("end_call_ack", false)) " — VM đã xác nhận end-call ✅" else "")
                             "failed" -> "📞 Cuộc gọi lỗi: ${vcError.ifEmpty { vcReason }}"
                             else -> ""
